@@ -26,8 +26,6 @@ SEARCH_LOCATIONS = [
 TITLE_INCLUDE_KEYWORDS = [
     "product manager",
     "product owner",
-    "product lead",
-    "head of product",
     "senior product",
     "associate product",
 ]
@@ -59,9 +57,6 @@ TITLE_EXCLUDE_KEYWORDS = [
 DESCRIPTION_EXCLUDE_KEYWORDS = [
     "10+ years",
     "15+ years",
-    "must be onsite 5 days",
-    "fully onsite",
-    "no remote",
 ]
 
 # --- Output ---

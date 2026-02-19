@@ -4,3 +4,5 @@ patch_notes.docx
 __pycache__/
 venv/
 .venv/
+claude.md
+.claude/

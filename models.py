@@ -353,7 +353,6 @@ SCORING_PROFILE = {
         "payments", "financial services", "financial technology",
     ],
     "familiar_domains": [
-        "gaming", "game", "entertainment", "video game",
         "ai ", "artificial intelligence", "llm", "generative ai",
         "ai-powered", "ai product", "agentic",
     ],
@@ -400,7 +399,6 @@ SCORING_PROFILE = {
         "knowledge management", "assurance",
         "amazon ecosystem", "amazon seller",
         "financial planning & analysis", "fp&a", "consolidation",
-        "blockchain", "defi", "smart contract",
     ],
 
     "preferred_locations": ["remote", "nationwide", "united kingdom"],
@@ -506,12 +504,6 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
     elif any(x in location for x in profile["bad_locations"]):
         if 'remote' not in work_type and 'hybrid/remote' not in work_type:
             score -= 10
-
-    # --- CONTRACT / TEMP ---
-    if any(x in combined for x in ['contract', '6 month', '6-month', '3 month', '3-month']):
-        score -= 3
-    if re.search(r'\u00a3\d{3,4}\s*/?\s*day', combined):
-        score -= 3
 
     # --- BONUS SIGNALS ---
     bonus_hits = sum(1 for k in profile["bonus_keywords"] if k in combined)

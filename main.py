@@ -404,23 +404,23 @@ def main():
     new_listings = deduplicate(all_listings, existing_urls)
     print(f"New unique listings to add: {len(new_listings)}")
 
-    # 3. Onsite days filter (reject >1 day on site)
-    filtered_listings = []
-    for job in new_listings:
-        if job.description:
-            passes, reason = check_onsite_days(job.description)
-            if not passes:
-                all_excluded.append(ExcludedJob(
-                    job.source, job.title, job.company,
-                    job.location, job.url, reason,
-                ))
-                continue
-        filtered_listings.append(job)
-
-    onsite_rejected = len(new_listings) - len(filtered_listings)
-    if onsite_rejected:
-        print(f"[Filter] Rejected {onsite_rejected} listings for onsite days requirement")
-    new_listings = filtered_listings
+    # 3. Onsite days filter (disabled — keeping all jobs regardless of onsite requirement)
+    # filtered_listings = []
+    # for job in new_listings:
+    #     if job.description:
+    #         passes, reason = check_onsite_days(job.description)
+    #         if not passes:
+    #             all_excluded.append(ExcludedJob(
+    #                 job.source, job.title, job.company,
+    #                 job.location, job.url, reason,
+    #             ))
+    #             continue
+    #     filtered_listings.append(job)
+    #
+    # onsite_rejected = len(new_listings) - len(filtered_listings)
+    # if onsite_rejected:
+    #     print(f"[Filter] Rejected {onsite_rejected} listings for onsite days requirement")
+    # new_listings = filtered_listings
 
     # Deduplicate excluded list by URL
     seen_excluded = set()
