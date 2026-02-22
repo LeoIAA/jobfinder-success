@@ -334,7 +334,7 @@ SCORING_PROFILE = {
         "product manager", "product owner",
     ],
     "underleveled_titles": [
-        "associate product", "junior product",
+        "associate product", "associate, product", "junior product",
     ],
     "stretch_titles": [
         "senior product",
@@ -401,10 +401,17 @@ SCORING_PROFILE = {
         "financial planning & analysis", "fp&a", "consolidation",
     ],
 
-    "preferred_locations": ["remote", "nationwide", "united kingdom"],
+    "preferred_locations": ["nationwide", "united kingdom"],
     "commutable_locations": ["london", "folkestone", "kent", "south east"],
     "bad_locations": ["manchester", "birmingham", "leeds", "bristol",
                       "edinburgh", "glasgow", "cardiff", "scotland"],
+    # Top UK cities for PM/tech jobs — small bonus as quality signal even for remote roles
+    "pm_hub_cities": [
+        "manchester", "bristol", "edinburgh", "cambridge",
+        "birmingham", "leeds", "oxford", "reading",
+        "brighton", "bath", "guildford", "newcastle",
+        "sheffield", "nottingham",
+    ],
 
     "salary_min": 50000,
     "salary_max": 85000,
@@ -432,17 +439,19 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
         return None
 
     combined = title + ' ' + desc
-    score = 50
+    score = 42
 
     # --- ROLE LEVEL ---
     if any(x in title for x in profile["target_titles"]):
         score += 8
-    if any(x in title for x in profile["underleveled_titles"]):
+    if any(x in title for x in profile["underleveled_titles"]) or (
+        re.search(r'\bassociate\b', title) and 'product' in title
+    ):
         score -= 5
     if any(x in title for x in profile["too_junior_titles"]):
         score -= 25
     if any(x in title for x in profile["stretch_titles"]):
-        score -= 5
+        score -= 10
     if any(x in title for x in profile["overleveled_titles"]):
         score -= 18
 
@@ -468,7 +477,7 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
     score += min(strong_hits * 4, 16)
 
     familiar_hits = sum(1 for k in profile["familiar_domains"] if k in combined)
-    score += min(familiar_hits * 3, 9)
+    score += min(familiar_hits * 2, 6)
 
     if any(k in combined for k in profile["unfamiliar_domains"]):
         score -= 6
@@ -481,7 +490,7 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
 
     # --- SKILLS & TOOLS ---
     skill_hits = sum(1 for k in profile["skills"] if k in combined)
-    score += min(skill_hits * 2, 10)
+    score += min(skill_hits * 1, 7)
 
     tool_hits = sum(1 for t in profile["tools"] if t in combined)
     score += min(tool_hits * 1, 4)
@@ -492,18 +501,23 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
             score -= 10
 
     # --- LOCATION & WORK TYPE ---
-    if 'remote' in work_type:
-        score += 8
-    elif 'hybrid/remote' in work_type:
-        score += 6
+    # Remote = Hybrid for candidate (based abroad, works remotely either way)
+    # Only penalise if clearly onsite (empty work_type = likely onsite or unknown)
+    is_flexible = 'remote' in work_type or 'hybrid' in work_type
+    if not is_flexible and not work_type:
+        score -= 3
 
     if any(x in location for x in profile["preferred_locations"]):
         score += 5
     elif any(x in location for x in profile["commutable_locations"]):
         score += 3
     elif any(x in location for x in profile["bad_locations"]):
-        if 'remote' not in work_type and 'hybrid/remote' not in work_type:
+        if not is_flexible:
             score -= 10
+
+    # Bonus for top UK PM job hubs (quality signal, additive even for remote roles)
+    if any(x in location for x in profile["pm_hub_cities"]):
+        score += 2
 
     # --- BONUS SIGNALS ---
     bonus_hits = sum(1 for k in profile["bonus_keywords"] if k in combined)

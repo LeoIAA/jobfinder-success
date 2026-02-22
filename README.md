@@ -85,6 +85,29 @@ job-scraper/
 
 ## Changelog
 
+### v0.42
+
+**Scoring engine tuning**
+- Base score lowered 50 → 42 to reduce score inflation on generic listings
+- `senior product` stretch-title penalty increased -5 → -10
+- Associate title detection: added regex `\bassociate\b` + `product` check to catch comma-formatted titles like "Associate, Product Manager"
+- `familiar_domains` cap reduced: 3 pts × hits (max 9) → 2 pts × hits (max 6)
+- `skills` cap reduced: 2 pts × hits (max 10) → 1 pt × hits (max 7)
+- Location/work type logic revamped: remote and hybrid treated equally (both = flexible); unknown/empty work type gets −3 instead of no adjustment; removed asymmetric remote-vs-hybrid bonus
+- `remote` removed from `preferred_locations` (work type logic already handles it)
+- Added `pm_hub_cities`: +2 score for top UK PM job hub cities as a listing quality signal, additive even for remote roles
+- Bad location penalty now triggers on any non-flexible work type (was keyed on exact `remote` string)
+
+**LinkedIn scraper**
+- Fallback description extraction via DOM TreeWalker: locates literal "About the job" text node and walks up the DOM tree to find the content block — robust against LinkedIn CSS class renames
+- Selenium fallback selector list expanded: added `main` and `article`
+- "About the job" prefix stripping switched from `startswith()` to `find()` — catches cases where the prefix is not at position 0
+
+**config.py**
+- `.env` file support: loads key-value pairs from a local `.env` at startup using stdlib only (no `python-dotenv` dependency); shell environment variables always take precedence over `.env`
+
+---
+
 ### v0.4
 **TotalJobs scraper**
 - Full Selenium-based scraper for TotalJobs using slug-based search URLs (`/jobs/product-manager`, `/jobs/product-owner`) — the query-param search returns 124k unfiltered results and was rejected

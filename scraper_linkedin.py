@@ -435,6 +435,30 @@ def _extract_detail_from_tab(driver) -> dict:
                 }
             }
 
+            // Fallback: find "About the job" text node and extract content after it.
+            // Robust against LinkedIn class name changes since it searches literal text.
+            if (!desc) {
+                var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                var found = false;
+                while (walker.nextNode() && !found) {
+                    if (walker.currentNode.textContent.trim().toLowerCase() === 'about the job') {
+                        var node = walker.currentNode.parentElement;
+                        while (node && node !== document.body) {
+                            var txt = node.innerText || '';
+                            if (txt.length > 200) {
+                                var cut = txt.toLowerCase().indexOf('about the job');
+                                if (cut >= 0) {
+                                    desc = txt.slice(cut + 13).trim();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            node = node.parentElement;
+                        }
+                    }
+                }
+            }
+
             var salary = '';
             var salSels = ['.jobs-unified-top-card__job-insight--highlight',
                            '.salary-main-rail__data-body', '.compensation__salary', "span[class*='salary']"];
@@ -486,15 +510,18 @@ def _extract_detail_from_tab(driver) -> dict:
                 result["date_posted"] = date_text
     except Exception as e:
         # Fallback to Selenium element-by-element if JS fails
-        for sel in [".jobs-description__content", "#job-details", ".jobs-description"]:
+        for sel in [".jobs-description__content", "#job-details", ".jobs-description", "main", "article"]:
             try:
                 el = driver.find_element(By.CSS_SELECTOR, sel)
                 text = el.text.strip()
                 if text and len(text) > 50:
-                    if text.lower().startswith("about the job"):
-                        text = text[len("about the job"):].lstrip(" \n\r\t:-")
-                    result["description"] = text
-                    break
+                    lower = text.lower()
+                    idx = lower.find("about the job")
+                    if idx >= 0:
+                        text = text[idx + len("about the job"):].lstrip(" \n\r\t:-")
+                    if text:
+                        result["description"] = text
+                        break
             except NoSuchElementException:
                 continue
 
