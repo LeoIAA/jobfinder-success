@@ -10,7 +10,7 @@ from scraper_reed import scrape_reed
 from scraper_cvlibrary import scrape_cvlibrary
 from scraper_totaljobs import scrape_totaljobs
 from scraper_linkedin import scrape_linkedin
-from output import write_listings, get_existing_urls, rescore_file, get_incomplete_rows, write_refetched
+from output import write_listings, get_existing_urls, rescore_file, get_incomplete_rows, write_refetched, recolor_by_date
 from models import (
     deduplicate, score_listings, check_onsite_days, score_job,
     check_description_filter,
@@ -339,6 +339,8 @@ def main():
                         help="Re-score all jobs in the spreadsheet without scraping.")
     parser.add_argument("--refetch", action="store_true",
                         help="Re-fetch missing descriptions/scores for existing listings.")
+    parser.add_argument("--recolor", action="store_true",
+                        help="Recolor company cells by scraping date (latest=bright yellow, prev=pale yellow).")
     parser.add_argument(
         "sources", nargs="*",
         help=f"Scraper(s) to run: {', '.join(SCRAPERS.keys())}. Omit for all.",
@@ -351,6 +353,14 @@ def main():
         print(f"UK PM Job Scraper -- Rescore mode")
         print(f"{'='*60}\n")
         rescore_file(args.output)
+        return
+
+    # Recolor mode: recolor company cells by scraping date
+    if args.recolor:
+        print(f"{'='*60}")
+        print(f"UK PM Job Scraper -- Recolor mode")
+        print(f"{'='*60}\n")
+        recolor_by_date(args.output)
         return
 
     # Refetch mode: re-fetch missing descriptions, then score and write back

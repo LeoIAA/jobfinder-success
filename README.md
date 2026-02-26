@@ -85,6 +85,32 @@ job-scraper/
 
 ## Changelog
 
+### v0.43
+
+**Scoring engine tuning**
+- `stretch_titles` penalty increased -10 → -16; `overleveled_titles` penalty -18 → -20
+- Years-of-experience matching overhauled: scans title + first 1500 chars of description; handles range patterns (`5-7 years` → lower bound), `Experience: N years`, `minimum N years`; more granular gap penalties (gap=1: -3, gap=2: -7, gap≤4: -14, gap>4: -20)
+- Added "head of product" in description (not title) as +4 signal — confirms mid-level PM role
+- Strong domain score: 4 pts × hits (max 16) → 3 pts × hits (max 12)
+- `deep_specialism_keywords` threshold lowered: ≥2 hits → ≥1 hit before triggering penalty
+- Added Data PM specialism keywords: `data catalog/catalogue`, `data lineage`, `master data`
+- Removed `psp` and `assurance` from deep-specialism list (too common in generic PM JDs)
+- Removed `"ai "` from `familiar_domains` (substring caused false positives on words like "paid")
+- Removed empty `work_type` penalty (-3); unknown work type no longer penalised
+- Added salary cap: salary max ≥ £110k → -12 (signals overleveled role)
+- Added contract/FTC detection: -5 for fixed-term, maternity cover, secondment, interim, etc.
+- `london` moved from `commutable_locations` → `preferred_locations` (+5 instead of +3)
+- `manchester` and `birmingham` removed from `bad_locations`; `birmingham` removed from `pm_hub_cities`
+
+**output.py**
+- `_demote_company_highlights`: fixed ARGB alpha-prefix stripping — now strips full 8-char prefix regardless of leading chars (was only stripping `00…` prefixes, missed other alpha values after save/reload)
+- Added `recolor_by_date()`: recolors company cells in the Listings sheet by Date Scraped — latest run = bright yellow, previous run = pale yellow, older runs = no fill
+
+**main.py**
+- Added `--recolor` CLI flag: reruns company cell coloring from Date Scraped without scraping
+
+---
+
 ### v0.42
 
 **Scoring engine tuning**

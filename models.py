@@ -353,7 +353,7 @@ SCORING_PROFILE = {
         "payments", "financial services", "financial technology",
     ],
     "familiar_domains": [
-        "ai ", "artificial intelligence", "llm", "generative ai",
+        "artificial intelligence", "llm", "generative ai",
         "ai-powered", "ai product", "agentic",
     ],
     "unfamiliar_domains": [
@@ -394,21 +394,23 @@ SCORING_PROFILE = {
     ],
     "deep_specialism_keywords": [
         "etl pipeline", "data warehouse", "snowflake",
-        "payment rails", "settlement model", "psp",
+        "payment rails", "settlement model",
         "rtp", "rng", "volatility model",
-        "knowledge management", "assurance",
+        "knowledge management",
         "amazon ecosystem", "amazon seller",
         "financial planning & analysis", "fp&a", "consolidation",
+        # Data/analytics PM specialism — specific enough to signal a dedicated Data PM role
+        "data catalog", "data catalogue",
+        "data lineage", "master data",
     ],
 
-    "preferred_locations": ["nationwide", "united kingdom"],
-    "commutable_locations": ["london", "folkestone", "kent", "south east"],
-    "bad_locations": ["manchester", "birmingham", "leeds", "bristol",
-                      "edinburgh", "glasgow", "cardiff", "scotland"],
+    "preferred_locations": ["nationwide", "united kingdom", "london"],
+    "commutable_locations": ["folkestone", "kent", "south east"],
+    "bad_locations": ["birmingham", "glasgow", "cardiff", "scotland"],
     # Top UK cities for PM/tech jobs — small bonus as quality signal even for remote roles
     "pm_hub_cities": [
         "manchester", "bristol", "edinburgh", "cambridge",
-        "birmingham", "leeds", "oxford", "reading",
+        "leeds", "oxford", "reading",
         "brighton", "bath", "guildford", "newcastle",
         "sheffield", "nottingham",
     ],
@@ -451,30 +453,59 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
     if any(x in title for x in profile["too_junior_titles"]):
         score -= 25
     if any(x in title for x in profile["stretch_titles"]):
-        score -= 10
+        score -= 16
     if any(x in title for x in profile["overleveled_titles"]):
-        score -= 18
+        score -= 20
 
-    # Years of experience requirement
-    yr_matches = re.findall(
-        r'(\d+)\+?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',
-        combined,
-    )
-    if yr_matches:
-        max_yrs = max(int(y) for y in yr_matches)
+    # Years of experience requirement.
+    # Scan title + first 1500 chars of description (reaches qualifications sections).
+    # Multiple patterns to catch real-world JD formats:
+    #   "5+ years of experience", "5 years experience"
+    #   "5-7 years of experience"  (use lower bound — that's the minimum)
+    #   "Experience: 5+ years", "experience of 5 years"
+    #   "minimum 5 years", "at least 5 years"
+    yr_text = title + ' ' + desc[:1500]
+    yr_req = []
+
+    # Ranges first (e.g. "5-7 years") — record lower bound, then mask to avoid double-counting
+    for m in re.finditer(r'(\d+)\s*[-\u2013]\s*\d+\s*(?:years?|yrs?)', yr_text, re.IGNORECASE):
+        y = int(m.group(1))
+        if 1 <= y <= 20:
+            yr_req.append(y)
+    yr_text_masked = re.sub(r'\d+\s*[-\u2013]\s*\d+\s*(?:years?|yrs?)', 'MASKED', yr_text, flags=re.IGNORECASE)
+
+    for pat in [
+        r'(\d+)\+?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience|exp)',       # "5+ years of experience"
+        r'(?:experience|exp)[:\s]+(?:of\s+)?(\d+)\+?\s*(?:years?|yrs?)',    # "Experience: 5+ years"
+        r'(?:minimum|at\s+least|min\.?)\s+(\d+)\+?\s*(?:years?|yrs?)',      # "minimum 5 years"
+    ]:
+        for m in re.finditer(pat, yr_text_masked, re.IGNORECASE):
+            y = int(m.group(1))
+            if 1 <= y <= 20:
+                yr_req.append(y)
+
+    if yr_req:
+        max_yrs = max(yr_req)
         gap = max_yrs - profile["years_experience"]
         if gap <= 0:
             score += 5
-        elif gap <= 2:
-            pass
+        elif gap == 1:
+            score -= 3
+        elif gap == 2:
+            score -= 7
         elif gap <= 4:
-            score -= 8
+            score -= 14
         else:
-            score -= 18
+            score -= 20
+
+    # "Head of Product" in description (not in title) means the role reports to HoP —
+    # confirms mid-level PM seniority, appropriate for candidate.
+    if "head of product" in desc and "head of product" not in title:
+        score += 4
 
     # --- DOMAIN FIT ---
     strong_hits = sum(1 for k in profile["strong_domains"] if k in combined)
-    score += min(strong_hits * 4, 16)
+    score += min(strong_hits * 3, 12)
 
     familiar_hits = sum(1 for k in profile["familiar_domains"] if k in combined)
     score += min(familiar_hits * 2, 6)
@@ -485,7 +516,7 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
         score -= 15
 
     specialism_hits = sum(1 for k in profile["deep_specialism_keywords"] if k in combined)
-    if specialism_hits >= 2:
+    if specialism_hits >= 1:
         score -= specialism_hits * 4
 
     # --- SKILLS & TOOLS ---
@@ -501,11 +532,7 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
             score -= 10
 
     # --- LOCATION & WORK TYPE ---
-    # Remote = Hybrid for candidate (based abroad, works remotely either way)
-    # Only penalise if clearly onsite (empty work_type = likely onsite or unknown)
     is_flexible = 'remote' in work_type or 'hybrid' in work_type
-    if not is_flexible and not work_type:
-        score -= 3
 
     if any(x in location for x in profile["preferred_locations"]):
         score += 5
@@ -518,6 +545,24 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
     # Bonus for top UK PM job hubs (quality signal, additive even for remote roles)
     if any(x in location for x in profile["pm_hub_cities"]):
         score += 2
+
+    # --- SALARY CAP ---
+    # If listed salary clearly exceeds the candidate's range it signals overleveled role
+    if job.salary:
+        sal_nums = re.findall(r'(\d[\d,]+)', job.salary.replace(' ', ''))
+        sal_nums = [int(n.replace(',', '')) for n in sal_nums]
+        if sal_nums:
+            sal_max = max(sal_nums)
+            if sal_max >= 110000:
+                score -= 12
+
+    # --- CONTRACT / FTC SIGNALS ---
+    contract_keywords = [
+        "fixed term", "fixed-term", " ftc", "(ftc)", "maternity cover",
+        "secondment", "interim role", "contract role", "temporary role",
+    ]
+    if any(k in desc for k in contract_keywords):
+        score -= 5
 
     # --- BONUS SIGNALS ---
     bonus_hits = sum(1 for k in profile["bonus_keywords"] if k in combined)

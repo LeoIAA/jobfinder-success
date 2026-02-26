@@ -194,8 +194,8 @@ def _demote_company_highlights(ws, company_col: int):
         fill_color = ""
         if cell.fill and cell.fill.fgColor and cell.fill.fgColor.rgb:
             fill_color = str(cell.fill.fgColor.rgb).upper()
-            # Strip alpha prefix if present (e.g. "00FFFF00" -> "FFFF00")
-            if len(fill_color) == 8 and fill_color.startswith("00"):
+            # openpyxl returns ARGB (8 chars) after save/reload — strip alpha prefix
+            if len(fill_color) == 8:
                 fill_color = fill_color[2:]
 
         if fill_color == "FFFF00":
@@ -489,3 +489,68 @@ def write_refetched(filepath: str, updates: list[dict]):
 
     wb.save(filepath)
     print(f"[Refetch] Updated {written} rows in {filepath}")
+
+
+def recolor_by_date(filepath: str = None):
+    """
+    Recolor company cells in the Listings sheet based on Date Scraped.
+    Latest scraping date → bright yellow, previous → pale yellow, older → no fill.
+    """
+    filepath = filepath or config.OUTPUT_FILE
+    p = Path(filepath)
+    if not p.exists():
+        print(f"[Recolor] File not found: {filepath}")
+        return
+
+    wb = load_workbook(filepath)
+    if config.SHEET_NAME not in wb.sheetnames:
+        print(f"[Recolor] Sheet '{config.SHEET_NAME}' not found")
+        wb.close()
+        return
+
+    ws = wb[config.SHEET_NAME]
+    headers = _read_headers(ws)
+    cmap = _col_map(headers)
+
+    date_col = cmap.get("Date Scraped")
+    company_col = cmap.get("Company")
+
+    if not date_col or not company_col:
+        print("[Recolor] Missing 'Date Scraped' or 'Company' column")
+        wb.close()
+        return
+
+    # Collect date per row
+    row_dates: dict[int, str] = {}
+    for row_num in range(2, ws.max_row + 1):
+        val = ws.cell(row=row_num, column=date_col).value
+        if val:
+            row_dates[row_num] = str(val)
+
+    unique_dates = sorted(set(row_dates.values()), reverse=True)
+    if not unique_dates:
+        print("[Recolor] No dates found, nothing to do")
+        wb.close()
+        return
+
+    latest = unique_dates[0]
+    second = unique_dates[1] if len(unique_dates) > 1 else None
+
+    print(f"[Recolor] {len(unique_dates)} scraping dates found:")
+    print(f"  {latest} → bright yellow (latest)")
+    if second:
+        print(f"  {second} → pale yellow (previous)")
+    if len(unique_dates) > 2:
+        print(f"  {len(unique_dates) - 2} older date(s) → no color")
+
+    for row_num, date_str in row_dates.items():
+        cell = ws.cell(row=row_num, column=company_col)
+        if date_str == latest:
+            cell.fill = NEW_COMPANY_FILL
+        elif date_str == second:
+            cell.fill = PREV_COMPANY_FILL
+        else:
+            cell.fill = EVEN_ROW_FILL if row_num % 2 == 0 else NO_FILL
+
+    wb.save(filepath)
+    print(f"[Recolor] Updated {len(row_dates)} company cells in '{filepath}'")
