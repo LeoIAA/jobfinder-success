@@ -41,6 +41,8 @@ python main.py
 | Location | Job location |
 | Salary | Salary range if listed |
 | Summary | 2-sentence summary (populated via Claude Code) |
+| S1 | Algorithm score 0–100 (domain/skills/experience keyword model) |
+| S2 | CV-fit score 0–100 (multiplicative model — location × role × domain fit) |
 | URL | Link to the full listing |
 
 ## Generating Summaries (via Claude Code)
@@ -84,6 +86,37 @@ job-scraper/
 ```
 
 ## Changelog
+
+### v0.44
+
+**S2 scoring system (CV-fit)**
+
+Added a second automated scoring engine — a multiplicative CV-fit scorer calibrated against 439 manual ratings (MAE ≈ 4 pts).
+
+- `score_job_s2()` in `models.py` — always returns 0–100 (works on title-only/stub rows unlike S1 which needs ≥50 chars)
+- Scoring model: `final = clamp(round(base × location_factor), 0, 100)`
+  - `base` = `role_pts` (0–30) + `domain_pts` (0–35) + `exp_pts` (0–15) + bonuses
+  - `location_factor`: Remote=1.10, London Hybrid=1.05, UK-wide Hybrid=0.95, Edinburgh Hybrid=0.78, Bristol Hybrid=0.82, Manchester Hybrid=0.40, Onsite London=0.45, Onsite Northern=0.22
+- S2 written automatically on every scraping run alongside S1
+- `--rescore` now updates both S1 and S2 in-place
+- `--rescore-s2` new flag: updates only S2 (faster, skips S1)
+- `rate_jobs.py` standalone script: one-off batch scorer (writes to S3 for manual review)
+
+**models.py**
+- `JobListing` gains `secondary_score: Optional[int] = None` field
+- `score_listings()` now calls both `score_job()` and `score_job_s2()` per listing
+
+**output.py**
+- `S2` added to `FIELD_MAP` and `DEFAULT_COLUMNS`
+- `_write_job_rows()` applies `_write_score()` (color-coded fill) to both S1 and S2
+- `rescore_file()` refactored around shared `_rescore_sheet()` helper
+- `rescore_s2_file()` added for S2-only rescore
+
+**main.py**
+- `--rescore-s2` CLI flag added
+- `--rescore` help text updated to note it covers S1 + S2
+
+---
 
 ### v0.43
 

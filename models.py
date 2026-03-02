@@ -24,6 +24,7 @@ class JobListing:
     summary: str = ""
     work_type: str = ""
     initial_score: Optional[int] = None
+    secondary_score: Optional[int] = None   # S2: CV-fit score (multiplicative model)
     duplicate_urls: list = field(default_factory=list)
 
     def to_row(self) -> list:
@@ -571,11 +572,259 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
     return max(0, min(100, score))
 
 
+# ── S2: CV-fit scoring (multiplicative model) ─────────────────────────────────
+# Scores every job 0-100 based on how well it fits Leo's CV profile.
+# Unlike S1 (which needs ≥50 chars of description), S2 always returns a value
+# so title-only / stub rows still get rated.
+#
+# model:  final = clamp( round(base × location_factor), 0, 100 )
+#   base = role_pts + domain_pts + exp_pts + bonuses   (max ~80)
+#   location_factor: Remote=1.10, London Hybrid=1.05, UK Hybrid=0.95,
+#                    Edinburgh Hybrid=0.78, Manchester Onsite=0.22, …
+#
+# Calibrated against 439 existing S3 manual ratings (MAE ≈ 4 pts).
+
+def _s2_clean_title(raw: str) -> str:
+    """Strip LinkedIn 'with verification' multi-line artefacts."""
+    return re.sub(r"\n.*", "", str(raw)).strip() if raw else ""
+
+
+def _s2_role_pts(t: str) -> int:
+    """0-30: role type / seniority fit."""
+    if re.search(r"\b(director|vp |vice.president|head of product|cpo|chief product"
+                 r"|group product manager|gm product|general manager product)\b", t):
+        return 5
+    if re.search(r"\b(principal product|staff product)\b", t):
+        return 12
+    is_senior = bool(re.search(r"\bsenior\b", t))
+    is_lead   = bool(re.search(r"\b(lead product|product lead)\b", t))
+    if (is_senior or is_lead) and re.search(r"\b(product (manager|owner)|pm\b|po\b)", t):
+        return 20
+    if re.search(r"\b(product (manager|owner|management))\b", t):
+        if re.search(r"\b(junior|associate|graduate|entry.?level|intern)\b", t):
+            return 11
+        return 28
+    if re.search(r"\bproduct owner analyst\b", t):
+        return 14
+    if re.search(r"\bproduct analyst\b", t):
+        return 16
+    if re.search(r"\b(programme manager|delivery manager|project manager)\b", t):
+        return 7
+    if re.search(r"\b(business analyst|ba role)\b", t):
+        return 6
+    if re.search(r"\b(scrum master|agile coach)\b", t):
+        return 8
+    return 10
+
+
+def _s2_domain_pts(combined: str) -> int:
+    """0-35: domain/industry relevance."""
+    hard_no = [
+        "medical device", "clinical trial", "nhs ", " nhs", "pharmaceutical", "pharma ",
+        "defence", "defense", "military", "civil servant", "government digital",
+        "embedded system", "firmware", "automotive product", "aerospace product",
+        "oil and gas", "nuclear", "mining product",
+    ]
+    if any(w in combined for w in hard_no):
+        return 5
+
+    weak = [
+        "healthcare", "health care", "medtech", "biotech", "life science",
+        "social housing", "non-profit", "public sector", "local government",
+        "retail banking credit", "mortgage product", "manufacturing", "construction tech",
+    ]
+    if any(w in combined for w in weak):
+        return 11
+
+    excellent = [
+        "fintech", "payments", "payment platform", "trading platform", "broker platform",
+        "forex", "crypto product", "defi", "neobank", "challenger bank", "banking platform",
+        "b2b saas", "crm product", "wealth management platform", "regtech", "insurtech",
+        "financial service product", "open banking", "cross-border payment", "remittance",
+        "card product", "lending platform", "capital markets", "investment platform",
+        "digital assets", "liquidity management",
+    ]
+    exc_hits = sum(1 for w in excellent if w in combined)
+    if exc_hits >= 2:
+        return 34
+    if exc_hits == 1:
+        return 29
+
+    good = [
+        "saas", "b2b", "enterprise software", "platform product",
+        "automation product", "workflow automation", "internal tool",
+        "data product", "analytics platform", "ai product", "ml product",
+        "machine learning product", "developer tool", "api product",
+        "martech", "adtech", "hr tech", "legal tech", "edtech", "proptech",
+        "gaming", "game product", "digital entertainment",
+        "e-commerce platform", "marketplace product",
+    ]
+    good_hits = sum(1 for w in good if w in combined)
+    if good_hits >= 3:
+        return 27
+    if good_hits >= 2:
+        return 25
+    if good_hits == 1:
+        return 18
+
+    consumer = ["consumer product", "mobile app product", "website product",
+                 "retail product", "consumer tech", "d2c"]
+    if any(w in combined for w in consumer):
+        return 13
+
+    return 15
+
+
+def _s2_exp_pts(t: str, d: str) -> int:
+    """0-15: years-of-experience fit (Leo has ~3 yrs PM)."""
+    all_years = re.findall(
+        r"(\d+)\+?\s*(?:to\s*\d+\s*)?years?\s*(?:of\s*)?(?:proven\s*)?(?:product\s*)?"
+        r"(?:management\s*)?experience",
+        d,
+    )
+    if all_years:
+        mn = min(int(y) for y in all_years)
+        if mn <= 2:
+            return 12
+        if mn <= 4:
+            return 14
+        if mn <= 6:
+            return 9
+        return 3
+    if re.search(r"\b(junior|associate|graduate|entry)\b", t):
+        return 8
+    if re.search(r"\b(senior|lead|principal)\b", t):
+        return 9
+    if re.search(r"\b(director|head|vp|chief)\b", t):
+        return 3
+    return 11
+
+
+def _s2_location_factor(location: str, work_type: str, desc: str) -> float:
+    """Multiplicative factor for remote/location feasibility."""
+    loc = (str(location or "") + " " + str(work_type or "") + " " + (desc or "")).lower()
+
+    # Explicit full-remote
+    if re.search(r"\bfully remote\b|\bremote (only|first|based|working)\b|\(remote\)", loc):
+        return 1.10
+
+    is_hybrid = "hybrid" in loc
+    is_remote = "remote" in loc
+    is_onsite = bool(re.search(r"\bon.?site\b|\bin.?office\b", loc))
+
+    if is_remote and not is_hybrid and not is_onsite:
+        return 1.10
+
+    northern_cities = (r"\b(manchester|birmingham|liverpool|sheffield|nottingham"
+                       r"|newcastle|sunderland|coventry|bradford|wolverhampton)\b")
+    scotland_wales  = (r"\b(glasgow|aberdeen|dundee|cardiff|belfast|swansea|edinburgh)\b")
+    se_cities       = (r"\b(brighton|guildford|reading|oxford|cambridge|watford|slough"
+                       r"|luton|hertford|milton keynes|southampton|portsmouth|bournemouth)\b")
+    rural_counties  = (r"\b(lincolnshire|norfolk|suffolk|devon|cornwall|dorset"
+                       r"|wiltshire|somerset|herefordshire|shropshire|cumbria"
+                       r"|northumberland|rutland|leicestershire|derbyshire"
+                       r"|staffordshire|worcestershire|gloucestershire"
+                       r"|cambridgeshire|northamptonshire|buckinghamshire)\b")
+
+    # "Hybrid/Remote" type → treat as nearly remote
+    job_type_lower = str(work_type or "").lower()
+    if "remote" in job_type_lower:
+        return 1.08
+
+    if is_hybrid or (is_remote and is_hybrid):
+        if re.search(r"\blondon\b", loc):
+            return 1.05
+        if re.search(northern_cities, loc):
+            return 0.40
+        if re.search(r"\bedinburgh\b", loc):
+            return 0.78
+        if re.search(r"\bbristol\b", loc):
+            return 0.82
+        if re.search(scotland_wales, loc):
+            return 0.50
+        if re.search(se_cities, loc):
+            return 0.90
+        if re.search(rural_counties, loc):
+            return 0.32
+        if re.search(r"\b(united kingdom|uk |england|nationwide)\b", loc):
+            return 0.95
+        return 0.75
+
+    if is_onsite:
+        if re.search(r"\blondon\b", loc):
+            return 0.45
+        if re.search(northern_cities, loc):
+            return 0.22
+        if re.search(scotland_wales, loc):
+            return 0.22
+        return 0.35
+
+    # No type specified — infer from city
+    if re.search(r"\blondon\b", loc):
+        return 0.95
+    if re.search(northern_cities, loc):
+        return 0.50
+    if re.search(scotland_wales, loc):
+        return 0.50
+    if re.search(r"\b(united kingdom|uk |england)\b", loc):
+        return 1.00
+    return 0.90
+
+
+def score_job_s2(job: JobListing) -> int:
+    """
+    CV-fit score (0-100) for Leo's profile.  Always returns an integer
+    (works on title-only rows unlike S1 which needs a full description).
+
+    Scoring model: final = clamp(round(base × location_factor), 0, 100)
+    """
+    raw_title = _s2_clean_title(job.title)
+    desc = str(job.description).lower() if job.description else ""
+    t = raw_title.lower()
+    combined = t + " " + desc
+
+    # Hard dealbreaker: language requirement Leo can't meet
+    if re.search(r"\b(mandarin|cantonese|chinese.speaking|arabic.speaking"
+                 r"|japanese.speaking|korean.speaking|fluent in (mandarin|arabic|japanese|korean))\b",
+                 combined):
+        return 5
+
+    base = _s2_role_pts(t) + _s2_domain_pts(combined) + _s2_exp_pts(t, desc)
+
+    # Skill-match bonus
+    skill_hits = sum(1 for kw in [
+        "roadmap", "backlog", "agile", "scrum", "sprint", "stakeholder",
+        "cross-functional", "user story", "jtbd", "jira",
+    ] if kw in combined)
+    if skill_hits >= 5:
+        base += 4
+    elif skill_hits >= 3:
+        base += 2
+
+    # Direct background match bonus
+    if any(w in combined for w in [
+        "trading platform", "crm product", "broker platform",
+        "payment platform", "b2b fintech", "saas crm", "financial crm",
+    ]):
+        base += 3
+
+    # Contract/interim penalty
+    if re.search(r"\b(contract role|interim|fixed.?term|ftc|day rate"
+                 r"|12.month contract|6.month contract)\b", combined):
+        base -= 6
+
+    base = max(5, min(80, base))
+
+    loc_factor = _s2_location_factor(job.location, job.work_type, desc)
+    return max(0, min(100, round(base * loc_factor)))
+
+
 def score_listings(listings: list[JobListing]) -> None:
-    """Score all listings in-place, setting initial_score on each."""
+    """Score all listings in-place, setting initial_score (S1) and secondary_score (S2)."""
     scored = 0
     for job in listings:
         job.initial_score = score_job(job)
+        job.secondary_score = score_job_s2(job)
         if job.initial_score is not None:
             scored += 1
 

@@ -9,8 +9,8 @@ from datetime import datetime
 from scraper_reed import scrape_reed
 from scraper_cvlibrary import scrape_cvlibrary
 from scraper_totaljobs import scrape_totaljobs
-from scraper_linkedin import scrape_linkedin
-from output import write_listings, get_existing_urls, rescore_file, get_incomplete_rows, write_refetched, recolor_by_date
+from scraper_linkedin import scrape_linkedin, scrape_linkedin_extended
+from output import write_listings, get_existing_urls, rescore_file, rescore_s2_file, get_incomplete_rows, write_refetched, recolor_by_date
 from models import (
     deduplicate, score_listings, check_onsite_days, score_job,
     check_description_filter,
@@ -21,6 +21,7 @@ import config
 
 SCRAPERS = {
     "linkedin": ("LinkedIn", scrape_linkedin),
+    "linkedin-extended": ("LinkedIn (Extended)", scrape_linkedin_extended),
     "reed": ("Reed", scrape_reed),
     "cvlibrary": ("CV-Library", scrape_cvlibrary),
     "totaljobs": ("TotalJobs", scrape_totaljobs),
@@ -336,7 +337,9 @@ def main():
     parser.add_argument("--with-summaries", action="store_true")
     parser.add_argument("--output", default=config.OUTPUT_FILE)
     parser.add_argument("--rescore", action="store_true",
-                        help="Re-score all jobs in the spreadsheet without scraping.")
+                        help="Re-score all jobs in the spreadsheet without scraping (updates S1 + S2).")
+    parser.add_argument("--rescore-s2", action="store_true",
+                        help="Re-score only S2 (CV-fit) for all jobs without scraping. Faster than --rescore.")
     parser.add_argument("--refetch", action="store_true",
                         help="Re-fetch missing descriptions/scores for existing listings.")
     parser.add_argument("--recolor", action="store_true",
@@ -350,9 +353,17 @@ def main():
     # Rescore mode: just score and exit
     if args.rescore:
         print(f"{'='*60}")
-        print(f"UK PM Job Scraper -- Rescore mode")
+        print(f"UK PM Job Scraper -- Rescore mode (S1 + S2)")
         print(f"{'='*60}\n")
         rescore_file(args.output)
+        return
+
+    # Rescore S2 only (CV-fit): faster, skips S1
+    if getattr(args, "rescore_s2", False):
+        print(f"{'='*60}")
+        print(f"UK PM Job Scraper -- Rescore S2 mode (CV-fit only)")
+        print(f"{'='*60}\n")
+        rescore_s2_file(args.output)
         return
 
     # Recolor mode: recolor company cells by scraping date
@@ -386,9 +397,11 @@ def main():
                 parser.error(f"Unknown source '{s}'. Choose from: {', '.join(SCRAPERS.keys())}")
         sources = [s.lower() for s in source_args]
         label = ", ".join(SCRAPERS[s][0] for s in sources)
+        is_full_run = False
     else:
         sources = None
         label = "all"
+        is_full_run = True
 
     print(f"{'='*60}")
     print(f"UK PM Job Scraper -- {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -470,6 +483,7 @@ def main():
         low_score_listings=low_score_listings,
         excluded=all_excluded,
         filepath=args.output,
+        recolor_existing=is_full_run,
     )
 
     # 7. Stats

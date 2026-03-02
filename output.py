@@ -62,6 +62,7 @@ FIELD_MAP = {
     "Type": lambda j: j.work_type,
     "Salary": lambda j: j.salary,
     "S1": lambda j: j.initial_score if j.initial_score is not None else "",
+    "S2": lambda j: j.secondary_score if j.secondary_score is not None else "",
     "URL": lambda j: j.url,
     "Description": lambda j: j.description,
     "Duplicates": lambda j: "\n".join(j.duplicate_urls) if j.duplicate_urls else "",
@@ -70,7 +71,7 @@ FIELD_MAP = {
 # Default column order for new files
 DEFAULT_COLUMNS = [
     "Date Scraped", "Date Posted", "Source", "Title", "Company",
-    "Location", "Type", "Salary", "URL", "Description", "S1", "Duplicates",
+    "Location", "Type", "Salary", "URL", "Description", "S1", "S2", "Duplicates",
 ]
 
 
@@ -228,7 +229,7 @@ def _write_job_rows(ws, listings, start_row, cmap, is_new=False):
 
             if header == "URL":
                 _write_url(ws, row_num, col, value)
-            elif header == "S1":
+            elif header in ("S1", "S2"):
                 _write_score(ws, row_num, col, value)
             else:
                 cell = ws.cell(row=row_num, column=col, value=value)
@@ -244,6 +245,7 @@ def write_listings(
     low_score_listings: list[JobListing] = None,
     excluded: list[ExcludedJob] = None,
     filepath: str = None,
+    recolor_existing: bool = True,
 ):
     filepath = filepath or config.OUTPUT_FILE
     p = Path(filepath)
@@ -260,8 +262,9 @@ def write_listings(
             _apply_header(ws, DEFAULT_COLUMNS)
             headers = DEFAULT_COLUMNS
             cmap = _col_map(headers)
-        # Demote highlight tiers: yellow → pale yellow → white
-        _demote_company_highlights(ws, cmap.get("Company", 0))
+        # Demote highlight tiers: yellow → pale yellow → white (full run only)
+        if recolor_existing:
+            _demote_company_highlights(ws, cmap.get("Company", 0))
         next_row = ws.max_row + 1
     else:
         wb = Workbook()
@@ -316,13 +319,60 @@ def write_listings(
     return added
 
 
+def _rescore_sheet(ws, cmap, score_s1: bool, score_s2: bool):
+    """
+    Inner helper: re-score all rows in one worksheet.
+    Writes S1 and/or S2 based on flags.  Returns count of rows processed.
+    """
+    from models import JobListing, score_job, score_job_s2
+
+    title_col   = cmap.get("Title")
+    desc_col    = cmap.get("Description")
+    company_col = cmap.get("Company")
+    location_col = cmap.get("Location")
+    type_col    = cmap.get("Type")
+    salary_col  = cmap.get("Salary")
+    source_col  = cmap.get("Source")
+    url_col     = cmap.get("URL")
+    s1_col      = cmap.get("S1")
+    s2_col      = cmap.get("S2")
+
+    if not title_col or not desc_col:
+        return 0
+
+    count = 0
+    for row_num in range(2, ws.max_row + 1):
+        title = ws.cell(row=row_num, column=title_col).value or ""
+        if not title:
+            continue
+
+        desc = ws.cell(row=row_num, column=desc_col).value or ""
+        job = JobListing(
+            source=ws.cell(row=row_num, column=source_col).value or "" if source_col else "",
+            title=title,
+            company=ws.cell(row=row_num, column=company_col).value or "" if company_col else "",
+            location=ws.cell(row=row_num, column=location_col).value or "" if location_col else "",
+            salary=ws.cell(row=row_num, column=salary_col).value or "" if salary_col else "",
+            url=ws.cell(row=row_num, column=url_col).value or "" if url_col else "",
+            description=desc,
+            date_posted="",
+            work_type=ws.cell(row=row_num, column=type_col).value or "" if type_col else "",
+        )
+
+        if score_s1 and s1_col:
+            _write_score(ws, row_num, s1_col, score_job(job))
+        if score_s2 and s2_col:
+            _write_score(ws, row_num, s2_col, score_job_s2(job))
+
+        count += 1
+    return count
+
+
 def rescore_file(filepath: str = None):
     """
-    Read all jobs from the spreadsheet, re-score them, and write scores back in-place.
-    Works on both the main Listings sheet and Low Score sheet.
+    Re-score all jobs in the spreadsheet (both S1 and S2) and write back in-place.
+    Works on Listings and Low Score sheets.
     """
-    from models import JobListing, score_job, score_color
-
     filepath = filepath or config.OUTPUT_FILE
     p = Path(filepath)
     if not p.exists():
@@ -330,63 +380,53 @@ def rescore_file(filepath: str = None):
         return
 
     wb = load_workbook(filepath)
-    total_scored = 0
+    total = 0
 
     for sheet_name in [config.SHEET_NAME, config.LOW_SCORE_SHEET_NAME]:
         if sheet_name not in wb.sheetnames:
             continue
-
         ws = wb[sheet_name]
-        headers = _read_headers(ws)
-        cmap = _col_map(headers)
-
-        # Need at minimum: Title, Description, S1
+        cmap = _col_map(_read_headers(ws))
         if "S1" not in cmap:
             print(f"[Rescore] No 'S1' column in '{sheet_name}', skipping")
             continue
-
-        s1_col = cmap["S1"]
-        title_col = cmap.get("Title")
-        desc_col = cmap.get("Description")
-        company_col = cmap.get("Company")
-        location_col = cmap.get("Location")
-        type_col = cmap.get("Type")
-        salary_col = cmap.get("Salary")
-        source_col = cmap.get("Source")
-        url_col = cmap.get("URL")
-
-        if not title_col or not desc_col:
-            print(f"[Rescore] Missing Title or Description column in '{sheet_name}', skipping")
-            continue
-
-        sheet_scored = 0
-        for row_num in range(2, ws.max_row + 1):
-            title = ws.cell(row=row_num, column=title_col).value or ""
-            desc = ws.cell(row=row_num, column=desc_col).value or ""
-            if not title:
-                continue
-
-            job = JobListing(
-                source=ws.cell(row=row_num, column=source_col).value or "" if source_col else "",
-                title=title,
-                company=ws.cell(row=row_num, column=company_col).value or "" if company_col else "",
-                location=ws.cell(row=row_num, column=location_col).value or "" if location_col else "",
-                salary=ws.cell(row=row_num, column=salary_col).value or "" if salary_col else "",
-                url=ws.cell(row=row_num, column=url_col).value or "" if url_col else "",
-                description=desc,
-                date_posted="",
-                work_type=ws.cell(row=row_num, column=type_col).value or "" if type_col else "",
-            )
-
-            score = score_job(job)
-            _write_score(ws, row_num, s1_col, score)
-            sheet_scored += 1
-
-        total_scored += sheet_scored
-        print(f"[Rescore] Re-scored {sheet_scored} jobs in '{sheet_name}'")
+        n = _rescore_sheet(ws, cmap, score_s1=True, score_s2=("S2" in cmap))
+        total += n
+        s2_note = " + S2" if "S2" in cmap else ""
+        print(f"[Rescore] Re-scored {n} jobs (S1{s2_note}) in '{sheet_name}'")
 
     wb.save(filepath)
-    print(f"[Rescore] Done. {total_scored} jobs re-scored in {filepath}")
+    print(f"[Rescore] Done. {total} jobs re-scored in {filepath}")
+
+
+def rescore_s2_file(filepath: str = None):
+    """
+    Re-score only S2 (CV-fit) for all jobs in the spreadsheet in-place.
+    Faster than --rescore because it skips S1.  Works on Listings and Low Score sheets.
+    """
+    filepath = filepath or config.OUTPUT_FILE
+    p = Path(filepath)
+    if not p.exists():
+        print(f"[Rescore S2] File not found: {filepath}")
+        return
+
+    wb = load_workbook(filepath)
+    total = 0
+
+    for sheet_name in [config.SHEET_NAME, config.LOW_SCORE_SHEET_NAME]:
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        cmap = _col_map(_read_headers(ws))
+        if "S2" not in cmap:
+            print(f"[Rescore S2] No 'S2' column in '{sheet_name}', skipping")
+            continue
+        n = _rescore_sheet(ws, cmap, score_s1=False, score_s2=True)
+        total += n
+        print(f"[Rescore S2] Re-scored {n} jobs in '{sheet_name}'")
+
+    wb.save(filepath)
+    print(f"[Rescore S2] Done. {total} jobs re-scored in {filepath}")
 
 
 def get_incomplete_rows(filepath: str = None) -> list[dict]:
