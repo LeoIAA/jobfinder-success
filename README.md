@@ -87,6 +87,21 @@ job-scraper/
 
 ## Changelog
 
+### v0.45
+
+**S1 scoring: eligibility penalties calibrated against application data**
+
+Analysed 239 clean application decisions (S1 ≥ 60, noise-excluded) from `score_dataset.xlsx`. Three signals were 4–4.5× over-represented in rejections but under-penalised or positively weighted in S1.
+
+**`models.py`**
+- Experience gap penalty tightened: `gap==2` (5 yrs req) -7 → -12; `gap<=4` (6-7 yrs) -14 → -18. 5-year requirements were the #1 rejection driver (4× more common in not-applied jobs)
+- `"trading"` and `"forex"` removed from `strong_domains` — were giving +3 to equity/prop trading roles with a 20% apply rate; payments/fintech jobs score on `"fintech"`, `"payments"`, `"financial services"` instead
+- Equity trading specialism keywords added to `deep_specialism_keywords` (-4 each): `equities`, `equity trading`, `derivatives`, `options trading`, `prop trading`, `proprietary trading`, `hedge fund`, `asset management`, `investment management`
+- SAFe / scaled agile added to `lacking_requirements` (-10): `safe agile`, `scaled agile framework`, `safe practitioner`, `safe certification`
+- Two forex context tuples added to `lacking_requirements`: `("forex", "trading desk")`, `("fx trading", "derivatives")` — avoids false-positives on payments FX
+
+---
+
 ### v0.44
 
 **S2 scoring system (CV-fit)**

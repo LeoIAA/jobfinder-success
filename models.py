@@ -350,7 +350,7 @@ SCORING_PROFILE = {
 
     "strong_domains": [
         "b2b", "saas", "crm", "internal tools", "internal platform",
-        "operations platform", "fintech", "trading", "forex",
+        "operations platform", "fintech",
         "payments", "financial services", "financial technology",
     ],
     "familiar_domains": [
@@ -392,6 +392,14 @@ SCORING_PROFILE = {
         ("coding required",),
         ("kubernetes",),
         ("big tech",),
+        # SAFe / enterprise scaled agile — Leo doesn't hold certification
+        ("safe agile",),
+        ("scaled agile framework",),
+        ("safe practitioner",),
+        ("safe certification",),
+        # Forex in investment/trading-desk context (not standalone payments FX)
+        ("forex", "trading desk"),
+        ("fx trading", "derivatives"),
     ],
     "deep_specialism_keywords": [
         "etl pipeline", "data warehouse", "snowflake",
@@ -403,6 +411,10 @@ SCORING_PROFILE = {
         # Data/analytics PM specialism — specific enough to signal a dedicated Data PM role
         "data catalog", "data catalogue",
         "data lineage", "master data",
+        # Investment/equity trading specialism — trading-desk PM, not fintech/payments
+        "equities", "equity trading", "derivatives", "options trading",
+        "prop trading", "proprietary trading",
+        "hedge fund", "asset management", "investment management",
     ],
 
     "preferred_locations": ["nationwide", "united kingdom", "london"],
@@ -493,9 +505,9 @@ def score_job(job: JobListing, profile: dict = None) -> Optional[int]:
         elif gap == 1:
             score -= 3
         elif gap == 2:
-            score -= 7
+            score -= 12  # 5 yrs req — most common rejection signal
         elif gap <= 4:
-            score -= 14
+            score -= 18
         else:
             score -= 20
 
