@@ -332,6 +332,160 @@ def _run_refetch(filepath: str):
         print("\n[Refetch] No updates to write.")
 
 
+def _run_recover_excluded(filepath: str):
+    """
+    One-time recovery: find excluded rows with empty title (failed extraction),
+    fetch their title from LinkedIn detail pages, re-filter, and add passing jobs
+    to the spreadsheet. Recovered rows are highlighted bright yellow (newest run).
+    """
+    import time as _time
+    from openpyxl import load_workbook as _lwb
+    from output import _read_headers, _col_map
+    from models import check_title_filter, check_description_filter, score_job, detect_work_type
+
+    # --- Step 1: Read Excluded sheet for empty-title rows ---
+    p = __import__("pathlib").Path(filepath)
+    if not p.exists():
+        print(f"[Recover] File not found: {filepath}")
+        return
+
+    wb = _lwb(filepath)
+    if config.EXCLUDED_SHEET_NAME not in wb.sheetnames:
+        print("[Recover] No Excluded sheet found.")
+        wb.close()
+        return
+
+    ws_ex = wb[config.EXCLUDED_SHEET_NAME]
+    cmap = _col_map(_read_headers(ws_ex))
+    title_col = cmap.get("Title")
+    url_col   = cmap.get("URL")
+    src_col   = cmap.get("Source")
+    co_col    = cmap.get("Company")
+    loc_col   = cmap.get("Location")
+
+    candidates = []
+    for row_num in range(2, ws_ex.max_row + 1):
+        title = str(ws_ex.cell(row=row_num, column=title_col).value or "").strip() if title_col else ""
+        url   = str(ws_ex.cell(row=row_num, column=url_col).value or "").strip() if url_col else ""
+        if not title and url.startswith("http"):
+            candidates.append({
+                "url":      url,
+                "source":   str(ws_ex.cell(row=row_num, column=src_col).value or "").strip() if src_col else "",
+                "company":  str(ws_ex.cell(row=row_num, column=co_col).value or "").strip() if co_col else "",
+                "location": str(ws_ex.cell(row=row_num, column=loc_col).value or "").strip() if loc_col else "",
+            })
+    wb.close()
+
+    print(f"[Recover] {len(candidates)} empty-title rows found in Excluded sheet")
+    if not candidates:
+        print("[Recover] Nothing to do.")
+        return
+
+    # --- Step 2: Cross-check against URLs already on main/low-score sheets ---
+    known = get_existing_urls(filepath)
+    to_fetch = [c for c in candidates if c["url"].lower() not in known]
+    already  = len(candidates) - len(to_fetch)
+    print(f"[Recover] {already} already on main/low-score sheet — skipping")
+    print(f"[Recover] {len(to_fetch)} to attempt title fetch")
+    if not to_fetch:
+        print("[Recover] Nothing to do.")
+        return
+
+    # --- Step 3: LinkedIn detail fetch ---
+    linkedin_rows = [c for c in to_fetch if "linkedin.com" in c["url"]]
+    if not linkedin_rows:
+        print("[Recover] No LinkedIn rows to fetch.")
+        return
+
+    from scraper_linkedin import (
+        _make_driver as _make_li_driver,
+        _check_login,
+        _is_session_alive,
+        _restart_driver as _restart_li,
+        _extract_detail_from_tab,
+        _random_delay,
+    )
+
+    print(f"[Recover] Fetching {len(linkedin_rows)} LinkedIn detail pages...")
+    try:
+        driver = _make_li_driver()
+    except Exception as e:
+        print(f"[Recover] Could not start LinkedIn browser: {e}")
+        return
+
+    new_listings = []
+    try:
+        if not _check_login(driver):
+            print("[Recover] Not logged into LinkedIn — aborting.")
+            return
+
+        for i, c in enumerate(linkedin_rows, 1):
+            if not _is_session_alive(driver):
+                driver = _restart_li(driver)
+                if not driver or not _check_login(driver):
+                    print("[Recover] Browser lost — stopping.")
+                    break
+
+            driver.get(c["url"])
+            _time.sleep(2)
+            detail = _extract_detail_from_tab(driver)
+
+            title = detail.get("title", "").strip()
+            if not title:
+                print(f"[Recover] [{i}/{len(linkedin_rows)}] {c['url'][:70]}: still no title")
+                _random_delay(1, 3)
+                continue
+
+            passes, reason = check_title_filter(title)
+            if not passes:
+                print(f"[Recover] [{i}/{len(linkedin_rows)}] '{title}': excluded ({reason})")
+                _random_delay(1, 3)
+                continue
+
+            desc = detail.get("description", "")
+            if desc:
+                passes, reason = check_description_filter(desc)
+                if not passes:
+                    print(f"[Recover] [{i}/{len(linkedin_rows)}] '{title}': desc excluded ({reason})")
+                    _random_delay(1, 3)
+                    continue
+
+            job = JobListing(
+                source="LinkedIn",
+                title=title,
+                company=c["company"],
+                location=c["location"],
+                salary=detail.get("salary", ""),
+                url=c["url"],
+                description=desc,
+                date_posted=detail.get("date_posted", ""),
+                work_type=detect_work_type(title, c["location"], desc),
+            )
+            job.initial_score = score_job(job)
+            new_listings.append(job)
+            print(f"[Recover] [{i}/{len(linkedin_rows)}] '{title}': score={job.initial_score} — queued")
+            _random_delay(2, 4)
+
+    finally:
+        try:
+            proc = getattr(driver, "_chrome_proc", None) if driver else None
+            driver.quit()
+            if proc:
+                proc.terminate()
+                proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    # --- Step 4: Write recovered listings (bright yellow = newest run) ---
+    if new_listings:
+        main_l = [j for j in new_listings if (j.initial_score or 0) >= 60]
+        low_l  = [j for j in new_listings if (j.initial_score or 0) < 60]
+        write_listings(main_l, low_score_listings=low_l, filepath=filepath, recolor_existing=True)
+        print(f"\n[Recover] Done: {len(main_l)} added to main sheet, {len(low_l)} to low-score sheet")
+    else:
+        print("\n[Recover] No listings recovered.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="UK PM Job Scraper")
     parser.add_argument("--with-summaries", action="store_true")
@@ -344,6 +498,8 @@ def main():
                         help="Re-fetch missing descriptions/scores for existing listings.")
     parser.add_argument("--recolor", action="store_true",
                         help="Recolor company cells by scraping date (latest=bright yellow, prev=pale yellow).")
+    parser.add_argument("--recover-excluded", action="store_true",
+                        help="Fetch titles for empty-title excluded jobs and add passing ones to the spreadsheet.")
     parser.add_argument(
         "sources", nargs="*",
         help=f"Scraper(s) to run: {', '.join(SCRAPERS.keys())}. Omit for all.",
@@ -372,6 +528,14 @@ def main():
         print(f"UK PM Job Scraper -- Recolor mode")
         print(f"{'='*60}\n")
         recolor_by_date(args.output)
+        return
+
+    # Recover excluded mode: fetch titles for empty-title excluded jobs
+    if args.recover_excluded:
+        print(f"{'='*60}")
+        print(f"UK PM Job Scraper -- Recover excluded mode")
+        print(f"{'='*60}\n")
+        _run_recover_excluded(args.output)
         return
 
     # Refetch mode: re-fetch missing descriptions, then score and write back

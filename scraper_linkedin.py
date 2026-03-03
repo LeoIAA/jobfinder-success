@@ -46,7 +46,8 @@ from models import (
 
 
 LINKEDIN_BASE = "https://www.linkedin.com"
-MAX_PAGES = 69  # up from 5 -- go deep, stop when no more results
+MAX_PAGES = 69           # standard mode: stop well before LinkedIn's 1000-result cap
+MAX_PAGES_EXTENDED = 140  # extended mode: go as deep as possible
 RESULTS_PER_PAGE = 25
 BATCH_SIZE = 7  # number of tabs to open in parallel for detail fetching
 
@@ -399,7 +400,7 @@ def _extract_detail_from_tab(driver) -> dict:
     Does NOT navigate -- assumes page is already loaded.
     Uses a single JS call for speed where possible.
     """
-    result = {"description": "", "salary": "", "date_posted": ""}
+    result = {"title": "", "description": "", "salary": "", "date_posted": ""}
 
     if _check_security_wall(driver):
         resolved = _wait_for_security(driver)
@@ -459,6 +460,24 @@ def _extract_detail_from_tab(driver) -> dict:
                 }
             }
 
+            var title = '';
+            var titleSels = [
+                'h1.job-details-jobs-unified-top-card__job-title',
+                '.jobs-unified-top-card__job-title h1',
+                'h1[class*="job-title"]',
+                '.job-details-jobs-unified-top-card__job-title',
+                'h1'];
+            for (var i = 0; i < titleSels.length; i++) {
+                var el = document.querySelector(titleSels[i]);
+                if (el && el.textContent.trim()) { title = el.textContent.trim(); break; }
+            }
+            if (!title) {
+                var t = document.title || '';
+                var cut = t.lastIndexOf(' | ');
+                if (cut > 0) t = t.slice(0, cut);
+                if (t && t.toLowerCase() !== 'linkedin') title = t.trim();
+            }
+
             var salary = '';
             var salSels = ['.jobs-unified-top-card__job-insight--highlight',
                            '.salary-main-rail__data-body', '.compensation__salary', "span[class*='salary']"];
@@ -495,10 +514,11 @@ def _extract_detail_from_tab(driver) -> dict:
                 }
             }
 
-            return {desc: desc, salary: salary, datePosted: datePosted};
+            return {title: title, desc: desc, salary: salary, datePosted: datePosted};
         """)
 
         if data:
+            result["title"] = data.get("title", "") or ""
             desc = data.get("desc", "")
             if desc:
                 if desc.lower().startswith("about the job"):
@@ -524,6 +544,13 @@ def _extract_detail_from_tab(driver) -> dict:
                         break
             except NoSuchElementException:
                 continue
+
+    # Selenium fallback for title if JS didn't get it
+    if not result["title"]:
+        try:
+            result["title"] = driver.find_element(By.TAG_NAME, "h1").text.strip()
+        except Exception:
+            pass
 
     return result
 
@@ -676,9 +703,17 @@ def _scrape_search_page(driver, url: str) -> list[dict]:
 # Main scraper
 # ---------------------------------------------------------------------------
 
-def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list[ExcludedJob]]:
-    """Run all LinkedIn searches. Returns (accepted_listings, excluded_listings)."""
-    print("[LinkedIn] Starting scraper...")
+def scrape_linkedin(known_urls: set[str] = None, extended: bool = False) -> tuple[list[JobListing], list[ExcludedJob]]:
+    """Run all LinkedIn searches. Returns (accepted_listings, excluded_listings).
+
+    extended=True: pages up to 140, stops only after 7 consecutive pages with 0 new
+    vacancies (or truly no more pages). Does not affect output coloring — that is
+    controlled by the caller (main.py passes recolor_existing=False for partial runs).
+    """
+    mode = "extended" if extended else "standard"
+    max_pages = MAX_PAGES_EXTENDED if extended else MAX_PAGES
+    low_yield_threshold = 7 if extended else 3
+    print(f"[LinkedIn] Starting scraper ({mode} mode)...")
     _known = set(u.lower().strip() for u in (known_urls or set()))
 
     try:
@@ -713,7 +748,7 @@ def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list
 
                 consecutive_empty = 0
                 low_yield_count = 0  # pages with 0 new results
-                for page in range(MAX_PAGES):
+                for page in range(max_pages):
                     start = page * RESULTS_PER_PAGE
                     url = _search_url(keyword, location, start)
 
@@ -747,15 +782,15 @@ def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list
                             new_count += 1
 
                     print(
-                        f"[LinkedIn]   -> Page {page + 1}: {len(results)} results "
+                        f"[LinkedIn]   -> Page {page + 1}/{max_pages}: {len(results)} results "
                         f"({new_count} new, {len(seen_ids)} unique total)"
                     )
 
-                    # Early stop: if 3 consecutive pages yield 0 new results, move on
+                    # Stop when too many consecutive pages yield nothing new
                     if new_count == 0:
                         low_yield_count += 1
-                        if low_yield_count >= 3:
-                            print(f"[LinkedIn]   -> 3 pages with 0 new results, moving on")
+                        if low_yield_count >= low_yield_threshold:
+                            print(f"[LinkedIn]   -> {low_yield_threshold} consecutive pages with 0 new results, moving on")
                             break
                     else:
                         low_yield_count = 0
@@ -779,10 +814,12 @@ def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list
             location = r["location"]
             url = r["url"]
 
-            passes, reason = check_title_filter(title)
-            if not passes:
-                excluded.append(ExcludedJob("LinkedIn", title, company, location, url, reason))
-                continue
+            if title:
+                passes, reason = check_title_filter(title)
+                if not passes:
+                    excluded.append(ExcludedJob("LinkedIn", title, company, location, url, reason))
+                    continue
+            # Empty title: defer filter to after detail fetch (title extracted from detail page)
 
             needs_detail.append(r)
 
@@ -830,7 +867,7 @@ def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list
                     try:
                         batch_results = _fetch_details_batch(driver, batch)
                     except Exception:
-                        batch_results = [{"url": b["url"], "description": "", "salary": "", "date_posted": ""} for b in batch]
+                        batch_results = [{"url": b["url"], "title": "", "description": "", "salary": "", "date_posted": ""} for b in batch]
 
                 # Process batch results
                 for r, detail in zip(batch, batch_results):
@@ -843,6 +880,18 @@ def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list
                     description = detail.get("description", "")
                     salary = detail.get("salary", "")
                     date_posted = detail.get("date_posted", "") or card_date
+
+                    # If card title was empty, try detail page title then re-filter
+                    if not title:
+                        title = detail.get("title", "") or ""
+                        if title:
+                            passes, reason = check_title_filter(title)
+                            if not passes:
+                                excluded.append(ExcludedJob("LinkedIn", title, company, location_text, url, reason))
+                                continue
+                        else:
+                            excluded.append(ExcludedJob("LinkedIn", "(unknown)", company, location_text, url, "Failed to extract title"))
+                            continue
 
                     # Description filter
                     if description:
@@ -883,6 +932,17 @@ def scrape_linkedin(known_urls: set[str] = None) -> tuple[list[JobListing], list
 
     print(f"[LinkedIn] Accepted: {len(listings)}, Excluded: {len(excluded)}")
     return deduplicate(listings), excluded
+
+
+def scrape_linkedin_extended(known_urls: set[str] = None) -> tuple[list[JobListing], list[ExcludedJob]]:
+    """LinkedIn scraper in extended mode.
+
+    Stops only when:
+      - LinkedIn returns no results on 2 consecutive pages (truly no more pages)
+      - 7 consecutive pages have 0 new vacancies (all already seen)
+      - Page 140 is reached
+    """
+    return scrape_linkedin(known_urls=known_urls, extended=True)
 
 
 if __name__ == "__main__":
