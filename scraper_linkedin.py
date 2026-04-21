@@ -190,7 +190,7 @@ def _check_security_wall(driver) -> bool:
     return any(ind in page_source for ind in indicators)
 
 
-def _wait_for_security(driver, max_wait: int = 120):
+def _wait_for_security(driver, max_wait: int = 60):
     """If a security wall is detected, pause and wait for manual resolution."""
     if not _check_security_wall(driver):
         return False
@@ -235,135 +235,215 @@ def _search_url(keyword: str, location: str, start: int = 0) -> str:
 
 
 def _extract_job_cards(driver) -> list[dict]:
-    """Extract job card data from the current search results page."""
+    """Extract job card data from the current search results page.
+
+    Handles both logged-in page (li[data-occludable-job-id], etc.) and
+    guest/public page (div[data-entity-urn*=jobPosting], .job-search-card).
+    Falls back to page-source regex if all element selectors fail.
+    """
     cards = []
 
-    card_selectors = [
+    # Logged-in page selectors (tried first)
+    logged_in_selectors = [
         "li.jobs-search-results__list-item",
         "li[data-occludable-job-id]",
         ".job-card-container",
         ".jobs-search-results-list li",
         "div.job-card-container--clickable",
+        "[data-job-id], [data-occludable-job-id]",
+    ]
+    # Guest/public page selectors
+    guest_selectors = [
+        "div[data-entity-urn*='jobPosting']",
+        ".job-search-card",
     ]
 
     card_elements = []
-    for selector in card_selectors:
+    is_guest_page = False
+
+    for selector in logged_in_selectors:
         card_elements = driver.find_elements(By.CSS_SELECTOR, selector)
         if card_elements:
             break
 
     if not card_elements:
-        card_elements = driver.find_elements(
-            By.CSS_SELECTOR, "[data-job-id], [data-occludable-job-id]"
-        )
+        for selector in guest_selectors:
+            card_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            if card_elements:
+                is_guest_page = True
+                break
 
-    for card in card_elements:
-        try:
-            job_id = (
-                card.get_attribute("data-occludable-job-id")
-                or card.get_attribute("data-job-id")
-                or ""
-            ).strip()
+    # --- Element-based extraction ---
+    if card_elements:
+        if is_guest_page:
+            print(f"[LinkedIn]   -> Guest page detected, using guest card selectors ({len(card_elements)} cards)")
+        for card in card_elements:
+            try:
+                job_id = ""
 
-            if not job_id:
-                try:
-                    inner = card.find_element(By.CSS_SELECTOR, "[data-job-id]")
-                    job_id = inner.get_attribute("data-job-id") or ""
-                except NoSuchElementException:
+                if is_guest_page:
+                    # Guest page: ID is in data-entity-urn="urn:li:jobPosting:1234567890"
+                    urn = card.get_attribute("data-entity-urn") or ""
+                    m = re.search(r"jobPosting:(\d+)", urn)
+                    if m:
+                        job_id = m.group(1)
+                    if not job_id:
+                        # fallback: extract trailing digits from the card's href
+                        try:
+                            link = card.find_element(By.CSS_SELECTOR, "a[href*='/jobs/view/']")
+                            href = link.get_attribute("href") or ""
+                            m = re.search(r"-(\d{7,})", href)
+                            if m:
+                                job_id = m.group(1)
+                        except NoSuchElementException:
+                            pass
+                else:
+                    job_id = (
+                        card.get_attribute("data-occludable-job-id")
+                        or card.get_attribute("data-job-id")
+                        or ""
+                    ).strip()
+                    if not job_id:
+                        try:
+                            inner = card.find_element(By.CSS_SELECTOR, "[data-job-id]")
+                            job_id = inner.get_attribute("data-job-id") or ""
+                        except NoSuchElementException:
+                            try:
+                                link = card.find_element(By.CSS_SELECTOR, "a[href*='/jobs/view/']")
+                                href = link.get_attribute("href") or ""
+                                m = re.search(r"/jobs/view/(\d+)", href)
+                                if m:
+                                    job_id = m.group(1)
+                            except NoSuchElementException:
+                                pass
+
+                if not job_id:
+                    continue
+
+                # Title — guest page uses h3.base-search-card__title
+                title = ""
+                title_selectors = (
+                    ["h3.base-search-card__title", "span.sr-only", "a[href*='/jobs/view/']"]
+                    if is_guest_page else
+                    [".job-card-list__title", ".job-card-container__link",
+                     "a.job-card-list__title--link", ".artdeco-entity-lockup__title",
+                     "a[href*='/jobs/view/']"]
+                )
+                for sel in title_selectors:
                     try:
-                        link = card.find_element(By.CSS_SELECTOR, "a[href*='/jobs/view/']")
-                        href = link.get_attribute("href") or ""
-                        match = re.search(r"/jobs/view/(\d+)", href)
-                        if match:
-                            job_id = match.group(1)
+                        el = card.find_element(By.CSS_SELECTOR, sel)
+                        title = el.text.strip()
+                        if title:
+                            break
                     except NoSuchElementException:
                         continue
 
-            if not job_id:
+                # Company
+                company = ""
+                company_selectors = (
+                    ["h4.base-search-card__subtitle", ".base-search-card__subtitle"]
+                    if is_guest_page else
+                    [".job-card-container__primary-description",
+                     ".artdeco-entity-lockup__subtitle",
+                     ".job-card-container__company-name"]
+                )
+                for sel in company_selectors:
+                    try:
+                        el = card.find_element(By.CSS_SELECTOR, sel)
+                        company = el.text.strip()
+                        if company:
+                            break
+                    except NoSuchElementException:
+                        continue
+
+                # Location
+                location = ""
+                location_selectors = (
+                    ["span.job-search-card__location", ".job-search-card__location"]
+                    if is_guest_page else
+                    [".job-card-container__metadata-wrapper li",
+                     ".artdeco-entity-lockup__caption",
+                     ".job-card-container__metadata-item"]
+                )
+                for sel in location_selectors:
+                    try:
+                        el = card.find_element(By.CSS_SELECTOR, sel)
+                        location = el.text.strip()
+                        if location:
+                            break
+                    except NoSuchElementException:
+                        continue
+
+                # Date posted
+                date_posted = ""
+                date_selectors = (
+                    ["time.job-search-card__listdate", "time"]
+                    if is_guest_page else
+                    [".job-card-container__listed-time", ".job-card-container__footer-item", "time"]
+                )
+                for sel in date_selectors:
+                    try:
+                        el = card.find_element(By.CSS_SELECTOR, sel)
+                        candidate = el.get_attribute("datetime") or el.text.strip()
+                        if _is_valid_date_text(candidate):
+                            date_posted = candidate
+                            break
+                    except NoSuchElementException:
+                        continue
+
+                url = f"{LINKEDIN_BASE}/jobs/view/{job_id}/"
+                cards.append({
+                    "id": job_id,
+                    "title": title,
+                    "company": company,
+                    "location": location,
+                    "date_posted": date_posted,
+                    "url": url,
+                })
+
+            except StaleElementReferenceException:
+                continue
+            except Exception as e:
+                print(f"[LinkedIn]   -> Error parsing card: {e}")
                 continue
 
-            # Title
-            title = ""
-            for sel in [
-                ".job-card-list__title",
-                ".job-card-container__link",
-                "a.job-card-list__title--link",
-                ".artdeco-entity-lockup__title",
-                "a[href*='/jobs/view/']",
-            ]:
-                try:
-                    el = card.find_element(By.CSS_SELECTOR, sel)
-                    title = el.text.strip()
-                    if title:
-                        break
-                except NoSuchElementException:
-                    continue
+        return cards
 
-            # Company
-            company = ""
-            for sel in [
-                ".job-card-container__primary-description",
-                ".artdeco-entity-lockup__subtitle",
-                ".job-card-container__company-name",
-            ]:
-                try:
-                    el = card.find_element(By.CSS_SELECTOR, sel)
-                    company = el.text.strip()
-                    if company:
-                        break
-                except NoSuchElementException:
-                    continue
+    # --- Last resort: extract job IDs from page source ---
+    # Works for both URL formats:
+    #   logged-in: /jobs/view/1234567890/
+    #   guest:     /jobs/view/product-owner-at-acme-1234567890
+    #   entity URN: data-entity-urn="urn:li:jobPosting:1234567890"
+    print(f"[LinkedIn]   -> No card elements matched any selector — using page-source regex fallback")
+    page_src = driver.page_source
 
-            # Location
-            location = ""
-            for sel in [
-                ".job-card-container__metadata-wrapper li",
-                ".artdeco-entity-lockup__caption",
-                ".job-card-container__metadata-item",
-            ]:
-                try:
-                    el = card.find_element(By.CSS_SELECTOR, sel)
-                    location = el.text.strip()
-                    if location:
-                        break
-                except NoSuchElementException:
-                    continue
+    debug_path = "/tmp/linkedin_debug_page.html"
+    try:
+        with open(debug_path, "w", encoding="utf-8") as f:
+            f.write(page_src)
+        print(f"[LinkedIn]   -> Page source saved to {debug_path} for selector inspection")
+    except Exception:
+        pass
 
-            # Date posted - validate to avoid "Promoted", "Viewed" etc.
-            date_posted = ""
-            for sel in [
-                ".job-card-container__listed-time",
-                ".job-card-container__footer-item",
-                "time",
-            ]:
-                try:
-                    el = card.find_element(By.CSS_SELECTOR, sel)
-                    candidate = el.text.strip()
-                    if not candidate:
-                        candidate = el.get_attribute("datetime") or ""
-                    if _is_valid_date_text(candidate):
-                        date_posted = candidate
-                        break
-                except NoSuchElementException:
-                    continue
+    seen_ids: set[str] = set()
+    # Try entity URN first (most reliable), then slug URLs
+    for pattern in [r'jobPosting:(\d+)', r'/jobs/view/[^"?&\s]*?-(\d{7,})', r'/jobs/view/(\d+)']:
+        for m in re.finditer(pattern, page_src):
+            job_id = m.group(1)
+            if job_id not in seen_ids:
+                seen_ids.add(job_id)
+                cards.append({
+                    "id": job_id,
+                    "title": "",
+                    "company": "",
+                    "location": "",
+                    "date_posted": "",
+                    "url": f"{LINKEDIN_BASE}/jobs/view/{job_id}/",
+                })
+        if cards:
+            break  # stop at first pattern that finds results
 
-            url = f"{LINKEDIN_BASE}/jobs/view/{job_id}/"
-
-            cards.append({
-                "id": job_id,
-                "title": title,
-                "company": company,
-                "location": location,
-                "date_posted": date_posted,
-                "url": url,
-            })
-
-        except StaleElementReferenceException:
-            continue
-        except Exception as e:
-            print(f"[LinkedIn]   -> Error parsing card: {e}")
-            continue
-
+    print(f"[LinkedIn]   -> Regex fallback found {len(cards)} job IDs from page source")
     return cards
 
 
@@ -673,29 +753,38 @@ def _scrape_search_page(driver, url: str) -> list[dict]:
         if not resolved:
             return []
 
+    timed_out = False
     try:
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((
                 By.CSS_SELECTOR,
-                ".jobs-search-results-list, .jobs-search__results-list, [data-occludable-job-id]"
+                ".jobs-search-results-list, .jobs-search__results-list, "
+                "[data-occludable-job-id], a[href*='/jobs/view/'], "
+                "[data-entity-urn*='jobPosting'], .job-search-card"
             ))
         )
     except TimeoutException:
-        print("[LinkedIn]   -> No results found on page")
+        timed_out = True
+        print(f"[LinkedIn]   -> Wait timed out on: {driver.title!r} | {driver.current_url[:80]}")
+        # Check for an explicit no-results banner first
         try:
             no_results = driver.find_element(
                 By.CSS_SELECTOR, ".jobs-search-no-results-banner, .jobs-search-results-list--empty"
             )
             if no_results:
                 print("[LinkedIn]   -> LinkedIn reports no matching jobs")
+                return []
         except NoSuchElementException:
             pass
-        return []
+        # No banner found — the container selector may be stale; try extracting anyway
+        print("[LinkedIn]   -> No known container found; attempting card extraction with fallback selectors")
 
     _scroll_job_list(driver)
     _short_delay()
 
     cards = _extract_job_cards(driver)
+    if timed_out:
+        print(f"[LinkedIn]   -> Fallback extraction found {len(cards)} card(s)")
     return cards
 
 
@@ -823,13 +912,13 @@ def scrape_linkedin(known_urls: set[str] = None, extended: bool = False) -> tupl
 
             needs_detail.append(r)
 
-        # Skip jobs already in spreadsheet
-        if _known:
-            before = len(needs_detail)
-            needs_detail = [r for r in needs_detail if r["url"].lower().strip() not in _known]
-            skipped = before - len(needs_detail)
-            if skipped:
-                print(f"[LinkedIn] Skipped {skipped} already in spreadsheet")
+        # Skip jobs already in spreadsheet — disabled (re-fetch all to look less robotic)
+        # if _known:
+        #     before = len(needs_detail)
+        #     needs_detail = [r for r in needs_detail if r["url"].lower().strip() not in _known]
+        #     skipped = before - len(needs_detail)
+        #     if skipped:
+        #         print(f"[LinkedIn] Skipped {skipped} already in spreadsheet")
 
         print(
             f"[LinkedIn] After title filter: {len(needs_detail)} to fetch, "

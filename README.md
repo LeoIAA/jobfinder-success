@@ -87,6 +87,38 @@ job-scraper/
 
 ## Changelog
 
+### v0.47
+
+**LinkedIn scraper: guest page support + broken selector recovery**
+
+LinkedIn's DOM structure changed — all existing card selectors stopped matching. Inspected live page source to identify the new structure and updated `_extract_job_cards` accordingly.
+
+**`scraper_linkedin.py`**
+- `_extract_job_cards` now detects and handles both logged-in and guest/public page layouts
+- Guest page cards identified via `div[data-entity-urn*='jobPosting']` and `.job-search-card` selectors
+- Guest page job IDs extracted from `data-entity-urn="urn:li:jobPosting:..."` attribute — stable across LinkedIn redesigns
+- Guest page title/company/location use `h3.base-search-card__title`, `h4.base-search-card__subtitle`, `span.job-search-card__location`
+- `WebDriverWait` broadened to include `[data-entity-urn*='jobPosting']` and `.job-search-card` — no more 15s timeouts on guest pages
+- On `TimeoutException`, scraper no longer bails immediately — attempts card extraction with fallback selectors, only returns early if an explicit no-results banner is found; prints page title + URL for diagnostics
+- Page-source regex fallback (last resort) fixed: old pattern `/jobs/view/(\d+)` matched zero results on guest pages which use slug URLs like `/jobs/view/product-owner-at-acme-4389307736`; new patterns try `jobPosting:(\d+)` → slug trailing digits → pure-numeric path in order
+- `known_urls` skip block disabled — scraper now fetches detail pages for all results, avoiding the pattern of scrolling many search pages without clicking any jobs
+- Security check timeout reduced 120s → 60s
+
+---
+
+### v0.46
+
+**LinkedIn: recover empty-title excluded jobs, fix title extraction**
+
+**`main.py`**
+- Added `--recover` CLI mode: scans the Excluded sheet for rows with empty title (failed extraction during a previous run), fetches their LinkedIn detail pages, re-applies title/description filters, and promotes passing jobs to the main sheet highlighted as newest-run
+
+**`scraper_linkedin.py`**
+- Title extraction on detail pages improved — `h1` Selenium fallback now fires reliably when JS extraction returns empty
+- Empty-title cards from search results are deferred through to detail fetch and re-filtered after title is resolved; cards where detail fetch also fails title are excluded with reason `"Failed to extract title"`
+
+---
+
 ### v0.45
 
 **S1 scoring: eligibility penalties calibrated against application data**

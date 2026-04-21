@@ -25,6 +25,7 @@ class JobListing:
     work_type: str = ""
     initial_score: Optional[int] = None
     secondary_score: Optional[int] = None   # S2: CV-fit score (multiplicative model)
+    edge_score: Optional[int] = None        # EDGE: competitive advantage score
     duplicate_urls: list = field(default_factory=list)
 
     def to_row(self) -> list:
@@ -831,12 +832,121 @@ def score_job_s2(job: JobListing) -> int:
     return max(0, min(100, round(base * loc_factor)))
 
 
+def score_job_edge(job: JobListing) -> int:
+    """
+    Score 0-100 measuring Leo's competitive edge over local applicants.
+    High = structural reasons this employer would prefer Leo over the typical
+    London-based candidate: overqualification, thin local talent pool,
+    relocation willingness, startup fit, language advantage.
+    """
+    title = job.title.lower()
+    desc = (job.description or "").lower()
+    location = (job.location or "").lower()
+    work_type = (job.work_type or "").lower()
+    combined = title + " " + desc
+    loc_combined = location + " " + work_type + " " + desc
+
+    score = 40  # neutral baseline
+
+    # --- OVERQUALIFICATION EDGE ---
+    is_junior = any(x in title for x in [
+        "associate", "junior", "entry-level", "entry level", "graduate",
+    ])
+    is_overlevel = any(x in title for x in [
+        "director", "head of product", "vp ", "chief product",
+        "principal", "staff product",
+    ])
+    is_mid = bool(re.search(r"\bproduct (manager|owner)\b", title)) and not bool(
+        re.search(r"\b(senior|lead|principal|director|head|vp)\b", title)
+    )
+
+    if is_junior:
+        score += 18   # strong overqualification — employer gets more than they paid for
+    elif is_mid:
+        score += 8    # slight overqualification at standard PM level
+    elif is_overlevel:
+        score -= 10   # Leo is underqualified, no edge here
+
+    # --- LOCATION THINNESS ---
+    is_fully_remote = bool(re.search(
+        r"\bfully remote\b|\bremote.only\b|\bremote.first\b|\(remote\)", loc_combined
+    )) or ("remote" in work_type and "hybrid" not in work_type)
+    is_hybrid = "hybrid" in work_type
+    is_london = "london" in location
+
+    non_london_cities = [
+        "manchester", "birmingham", "bristol", "leeds", "sheffield",
+        "edinburgh", "glasgow", "newcastle", "nottingham", "cardiff",
+        "belfast", "liverpool", "reading", "guildford", "oxford",
+        "cambridge", "brighton", "southampton", "portsmouth", "coventry",
+        "leicester", "norwich", "exeter", "hull", "swindon", "derby",
+        "wolverhampton", "middlesbrough", "swansea", "aberdeen", "dundee",
+        "bath", "york", "lincoln", "stoke", "luton", "milton keynes",
+    ]
+    is_non_london_city = any(c in location for c in non_london_cities)
+    is_uk_generic = bool(re.search(r"\b(united kingdom|nationwide|england)\b", location))
+
+    if is_fully_remote:
+        score -= 8    # everyone competes remotely, zero location edge
+    elif is_london and is_hybrid:
+        score -= 5    # massive talent pool even with hybrid
+    elif is_london and not is_hybrid:
+        score -= 2    # large pool, but Leo can go onsite
+    elif is_non_london_city and (is_hybrid or not is_fully_remote):
+        score += 18   # thin local PM pool, Leo willing to relocate = real edge
+    elif is_uk_generic:
+        score += 5    # nationwide search benefits from relocation flexibility
+
+    # Explicit relocation openness in the JD = employer already expects non-local applicants
+    if re.search(r"\brelocation (package|assistance|support|allowance|bonus)\b", desc):
+        score += 12
+    elif re.search(r"\bopen to relocat|willing to relocat|relocation considered\b", desc):
+        score += 8
+
+    # --- STARTUP / SMALL COMPANY FIT ---
+    # Less brand prestige = fewer prestige-seeking applicants competing
+    if any(k in combined for k in ["startup", "start-up", "start up", "seed stage", "early stage"]):
+        score += 8
+    elif any(k in combined for k in ["scale-up", "scaleup", "series a", "series b"]):
+        score += 6
+    elif any(k in combined for k in ["sme", "small business", "boutique", "family-owned"]):
+        score += 4
+
+    # --- SALARY BELOW RANGE (fewer senior applicants) ---
+    if job.salary:
+        sal_nums = re.findall(r'(\d[\d,]+)', job.salary.replace(' ', ''))
+        sal_vals = [int(n.replace(',', '')) for n in sal_nums if int(n.replace(',', '')) > 10000]
+        if sal_vals:
+            sal_top = max(sal_vals)
+            if sal_top < 45000:
+                score += 12  # clearly below senior market rate = less competition
+            elif sal_top < 55000:
+                score += 8
+            elif sal_top < 65000:
+                score += 4
+
+    # --- LANGUAGE / INTERNATIONAL EDGE ---
+    if re.search(r"\b(russian|cis market|eastern europ|international market|international expansion)\b", combined):
+        score += 10
+    if re.search(r"\b(multilingual|multiple languages|european languages)\b", combined):
+        score += 6
+    if re.search(r"\b(global product|global team|cross.?border|international client)\b", combined):
+        score += 4
+
+    # --- HARD-TO-FILL SIGNALS ---
+    if re.search(r"\b(urgent|immediate start|asap|as soon as possible)\b", combined):
+        score += 5
+
+    return max(0, min(100, score))
+
+
 def score_listings(listings: list[JobListing]) -> None:
-    """Score all listings in-place, setting initial_score (S1) and secondary_score (S2)."""
+    """Score all listings in-place, setting initial_score (S1), secondary_score (S2), and edge_score."""
     scored = 0
     for job in listings:
         job.initial_score = score_job(job)
         job.secondary_score = score_job_s2(job)
+        job.edge_score = score_job_edge(job)
         if job.initial_score is not None:
             scored += 1
 

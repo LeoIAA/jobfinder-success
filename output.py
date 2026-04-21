@@ -38,7 +38,7 @@ THIN_BORDER = Border(
 LISTINGS_COL_WIDTHS = {
     "Date Scraped": 12, "Date Posted": 12, "Source": 10, "Title": 40,
     "Company": 25, "Location": 20, "Type": 12, "Salary": 22,
-    "S1": 8, "URL": 50, "Description": 80,
+    "S1": 8, "S2": 8, "EDGE": 8, "URL": 50, "Description": 80,
 }
 
 EXCLUDED_COL_WIDTHS = {
@@ -63,6 +63,7 @@ FIELD_MAP = {
     "Salary": lambda j: j.salary,
     "S1": lambda j: j.initial_score if j.initial_score is not None else "",
     "S2": lambda j: j.secondary_score if j.secondary_score is not None else "",
+    "EDGE": lambda j: j.edge_score if j.edge_score is not None else "",
     "URL": lambda j: j.url,
     "Description": lambda j: j.description,
     "Duplicates": lambda j: "\n".join(j.duplicate_urls) if j.duplicate_urls else "",
@@ -71,7 +72,7 @@ FIELD_MAP = {
 # Default column order for new files
 DEFAULT_COLUMNS = [
     "Date Scraped", "Date Posted", "Source", "Title", "Company",
-    "Location", "Type", "Salary", "URL", "Description", "S1", "S2", "Duplicates",
+    "Location", "Type", "Salary", "URL", "Description", "S1", "S2", "EDGE", "Duplicates",
 ]
 
 
@@ -229,7 +230,7 @@ def _write_job_rows(ws, listings, start_row, cmap, is_new=False):
 
             if header == "URL":
                 _write_url(ws, row_num, col, value)
-            elif header in ("S1", "S2"):
+            elif header in ("S1", "S2", "EDGE"):
                 _write_score(ws, row_num, col, value)
             else:
                 cell = ws.cell(row=row_num, column=col, value=value)
@@ -319,23 +320,24 @@ def write_listings(
     return added
 
 
-def _rescore_sheet(ws, cmap, score_s1: bool, score_s2: bool):
+def _rescore_sheet(ws, cmap, score_s1: bool, score_s2: bool, score_edge: bool = False):
     """
     Inner helper: re-score all rows in one worksheet.
-    Writes S1 and/or S2 based on flags.  Returns count of rows processed.
+    Writes S1, S2, and/or EDGE based on flags.  Returns count of rows processed.
     """
-    from models import JobListing, score_job, score_job_s2
+    from models import JobListing, score_job, score_job_s2, score_job_edge
 
-    title_col   = cmap.get("Title")
-    desc_col    = cmap.get("Description")
-    company_col = cmap.get("Company")
+    title_col    = cmap.get("Title")
+    desc_col     = cmap.get("Description")
+    company_col  = cmap.get("Company")
     location_col = cmap.get("Location")
-    type_col    = cmap.get("Type")
-    salary_col  = cmap.get("Salary")
-    source_col  = cmap.get("Source")
-    url_col     = cmap.get("URL")
-    s1_col      = cmap.get("S1")
-    s2_col      = cmap.get("S2")
+    type_col     = cmap.get("Type")
+    salary_col   = cmap.get("Salary")
+    source_col   = cmap.get("Source")
+    url_col      = cmap.get("URL")
+    s1_col       = cmap.get("S1")
+    s2_col       = cmap.get("S2")
+    edge_col     = cmap.get("EDGE")
 
     if not title_col or not desc_col:
         return 0
@@ -363,6 +365,8 @@ def _rescore_sheet(ws, cmap, score_s1: bool, score_s2: bool):
             _write_score(ws, row_num, s1_col, score_job(job))
         if score_s2 and s2_col:
             _write_score(ws, row_num, s2_col, score_job_s2(job))
+        if score_edge and edge_col:
+            _write_score(ws, row_num, edge_col, score_job_edge(job))
 
         count += 1
     return count
@@ -390,10 +394,13 @@ def rescore_file(filepath: str = None):
         if "S1" not in cmap:
             print(f"[Rescore] No 'S1' column in '{sheet_name}', skipping")
             continue
-        n = _rescore_sheet(ws, cmap, score_s1=True, score_s2=("S2" in cmap))
+        has_s2 = "S2" in cmap
+        has_edge = "EDGE" in cmap
+        n = _rescore_sheet(ws, cmap, score_s1=True, score_s2=has_s2, score_edge=has_edge)
         total += n
-        s2_note = " + S2" if "S2" in cmap else ""
-        print(f"[Rescore] Re-scored {n} jobs (S1{s2_note}) in '{sheet_name}'")
+        extras = " + S2" if has_s2 else ""
+        extras += " + EDGE" if has_edge else ""
+        print(f"[Rescore] Re-scored {n} jobs (S1{extras}) in '{sheet_name}'")
 
     wb.save(filepath)
     print(f"[Rescore] Done. {total} jobs re-scored in {filepath}")
