@@ -87,6 +87,24 @@ job-scraper/
 
 ## Changelog
 
+### v0.48e
+
+**Preserve Excluded/Low Score sheets across runs; fix re-scraping of already-excluded jobs**
+
+**`output.py`**
+- Low Score and Excluded sheets are now append-only — they are no longer wiped and rewritten each run
+- `get_existing_urls` now reads the Excluded sheet in addition to Listings and Low Score — previously-excluded job URLs are skipped on subsequent scrapes
+
+### v0.48d
+
+**`--recover-excluded`: remove promoted jobs from Excluded sheet**
+
+**`output.py`** / **`main.py`**
+- Added `remove_from_excluded()` helper that deletes rows by URL from the Excluded sheet
+- `--recover-excluded` now calls this after writing recovered listings so successfully promoted jobs no longer remain on the Excluded tab
+
+---
+
 ### v0.47
 
 **LinkedIn scraper: guest page support + broken selector recovery**

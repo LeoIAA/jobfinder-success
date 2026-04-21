@@ -11,7 +11,7 @@ from scraper_reed import scrape_reed
 from scraper_cvlibrary import scrape_cvlibrary
 from scraper_totaljobs import scrape_totaljobs
 from scraper_linkedin import scrape_linkedin, scrape_linkedin_extended
-from output import write_listings, get_existing_urls, rescore_file, rescore_s2_file, get_incomplete_rows, write_refetched, recolor_by_date
+from output import write_listings, get_existing_urls, rescore_file, rescore_s2_file, get_incomplete_rows, write_refetched, recolor_by_date, remove_from_excluded
 from models import (
     deduplicate, score_listings, check_onsite_days, score_job,
     check_description_filter,
@@ -509,6 +509,7 @@ def _run_recover_excluded(filepath: str):
         main_l = [j for j in new_listings if (j.initial_score or 0) >= 60]
         low_l  = [j for j in new_listings if (j.initial_score or 0) < 60]
         write_listings(main_l, low_score_listings=low_l, filepath=filepath, recolor_existing=True)
+        remove_from_excluded(filepath, {j.url for j in new_listings})
         print(f"\n[Recover] Done: {len(main_l)} added to main sheet, {len(low_l)} to low-score sheet")
     else:
         print("\n[Recover] No listings recovered.")

@@ -1,5 +1,5 @@
 """
-Spreadsheet output: append accepted listings, rewrite excluded sheet each run.
+Spreadsheet output: append-only to all sheets (Listings, Low Score, Excluded).
 URLs are clickable hyperlinks. S1 column is color-coded.
 New listings get bright yellow Company cells; previous run's yellow demotes
 to pale yellow; older listings go white. 3-tier highlight system.
@@ -170,7 +170,7 @@ def get_existing_urls(filepath: str) -> set[str]:
         return set()
     wb = load_workbook(filepath, read_only=True)
     urls = set()
-    for sheet_name in [config.SHEET_NAME, config.LOW_SCORE_SHEET_NAME]:
+    for sheet_name in [config.SHEET_NAME, config.LOW_SCORE_SHEET_NAME, config.EXCLUDED_SHEET_NAME]:
         if sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             header_row = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
@@ -284,26 +284,33 @@ def write_listings(
     # Write accepted listings with yellow company
     added = _write_job_rows(ws, listings, next_row, cmap, is_new=True)
 
-    # --- Low Score sheet (sub-60) -- wipe and rewrite every run ---
+    # --- Low Score sheet (sub-60) -- append, never wipe ---
     if low_score_listings is not None:
         if config.LOW_SCORE_SHEET_NAME in wb.sheetnames:
-            del wb[config.LOW_SCORE_SHEET_NAME]
-        ws_low = wb.create_sheet(config.LOW_SCORE_SHEET_NAME)
-        _apply_header(ws_low, DEFAULT_COLUMNS, LOW_SCORE_HEADER_FILL)
-        low_cmap = _col_map(DEFAULT_COLUMNS)
-        _write_job_rows(ws_low, low_score_listings, 2, low_cmap, is_new=False)
-        print(f"[Output] Wrote {len(low_score_listings)} low-score listings to '{config.LOW_SCORE_SHEET_NAME}' sheet")
+            ws_low = wb[config.LOW_SCORE_SHEET_NAME]
+            low_cmap = _col_map(_read_headers(ws_low))
+            low_next_row = ws_low.max_row + 1
+        else:
+            ws_low = wb.create_sheet(config.LOW_SCORE_SHEET_NAME)
+            _apply_header(ws_low, DEFAULT_COLUMNS, LOW_SCORE_HEADER_FILL)
+            low_cmap = _col_map(DEFAULT_COLUMNS)
+            low_next_row = 2
+        added_low = _write_job_rows(ws_low, low_score_listings, low_next_row, low_cmap, is_new=False)
+        print(f"[Output] Wrote {added_low} low-score listings to '{config.LOW_SCORE_SHEET_NAME}' sheet")
 
-    # --- Excluded sheet -- wipe and rewrite every run ---
+    # --- Excluded sheet -- append, never wipe ---
     if excluded is not None:
         if config.EXCLUDED_SHEET_NAME in wb.sheetnames:
-            del wb[config.EXCLUDED_SHEET_NAME]
-        ws_ex = wb.create_sheet(config.EXCLUDED_SHEET_NAME)
-        _apply_excluded_header(ws_ex, EXCLUDED_COLUMNS)
+            ws_ex = wb[config.EXCLUDED_SHEET_NAME]
+            ex_next_row = ws_ex.max_row + 1
+        else:
+            ws_ex = wb.create_sheet(config.EXCLUDED_SHEET_NAME)
+            _apply_excluded_header(ws_ex, EXCLUDED_COLUMNS)
+            ex_next_row = 2
 
         ex_url_col = EXCLUDED_COLUMNS.index("URL") + 1
         for i, ex in enumerate(excluded):
-            row_num = i + 2
+            row_num = ex_next_row + i
             row_data = ex.to_row()
             for col_idx, value in enumerate(row_data, 1):
                 cell = ws_ex.cell(row=row_num, column=col_idx, value=value)
@@ -539,6 +546,40 @@ def write_refetched(filepath: str, updates: list[dict]):
 
     wb.save(filepath)
     print(f"[Refetch] Updated {written} rows in {filepath}")
+
+
+def remove_from_excluded(filepath: str, urls: set[str]):
+    """Remove rows from the Excluded sheet whose URL is in `urls`."""
+    if not urls:
+        return
+    p = Path(filepath)
+    if not p.exists():
+        return
+
+    wb = load_workbook(filepath)
+    if config.EXCLUDED_SHEET_NAME not in wb.sheetnames:
+        wb.close()
+        return
+
+    ws = wb[config.EXCLUDED_SHEET_NAME]
+    cmap = _col_map(_read_headers(ws))
+    url_col = cmap.get("URL")
+    if not url_col:
+        wb.close()
+        return
+
+    normalized = {u.lower().rstrip("/") for u in urls}
+    rows_to_delete = []
+    for row_num in range(2, ws.max_row + 1):
+        cell_val = ws.cell(row=row_num, column=url_col).value
+        if cell_val and str(cell_val).lower().rstrip("/") in normalized:
+            rows_to_delete.append(row_num)
+
+    for row_num in reversed(rows_to_delete):
+        ws.delete_rows(row_num)
+
+    wb.save(filepath)
+    print(f"[Recover] Removed {len(rows_to_delete)} recovered rows from Excluded sheet")
 
 
 def recolor_by_date(filepath: str = None):
