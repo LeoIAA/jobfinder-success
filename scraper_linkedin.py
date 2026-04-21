@@ -175,7 +175,14 @@ def _is_valid_date_text(text: str) -> bool:
 
 def _check_security_wall(driver) -> bool:
     """Check if LinkedIn is showing a security check / captcha page."""
-    page_source = driver.page_source.lower()
+    try:
+        url = driver.current_url.lower()
+        if "/checkpoint/" in url or "/authwall" in url:
+            return True
+        page_source = driver.page_source.lower()
+    except WebDriverException:
+        # Tab crashed or session broken — not a security wall
+        return False
     indicators = [
         "security verification",
         "let's do a quick security check",
@@ -184,9 +191,6 @@ def _check_security_wall(driver) -> bool:
         "/checkpoint/challenge",
         "authwall",
     ]
-    url = driver.current_url.lower()
-    if "/checkpoint/" in url or "/authwall" in url:
-        return True
     return any(ind in page_source for ind in indicators)
 
 
