@@ -5,6 +5,7 @@ UK PM Job Scraper -- main entry point.
 import argparse
 import time
 from datetime import datetime
+from selenium.common.exceptions import WebDriverException
 
 from scraper_reed import scrape_reed
 from scraper_cvlibrary import scrape_cvlibrary
@@ -222,21 +223,42 @@ def _run_refetch(filepath: str):
             elif source_name == "TotalJobs":
                 from scraper_totaljobs import _make_driver, _is_session_alive, _restart_driver
 
-            try:
-                driver = _make_driver()
-            except Exception as e:
-                print(f"[Refetch]   -> Could not start browser for {source_name}: {e}")
-                continue
+            # CV-Library blocks the session after the first job page visit,
+            # so we spin up a fresh driver for each URL.
+            cvl_per_driver = (source_name == "CV-Library")
+
+            driver = None
+            if not cvl_per_driver:
+                try:
+                    driver = _make_driver()
+                except Exception as e:
+                    print(f"[Refetch]   -> Could not start browser for {source_name}: {e}")
+                    continue
 
             try:
                 for i, row_info in enumerate(source_rows):
-                    if not _is_session_alive(driver):
+                    if cvl_per_driver:
+                        try:
+                            driver = _make_driver()
+                        except Exception as e:
+                            print(f"[Refetch]   -> Could not start browser: {e}")
+                            break
+                    elif not _is_session_alive(driver):
                         driver = _restart_driver(driver)
                         if driver is None:
                             print(f"[Refetch]   -> Browser dead, stopping {source_name}")
                             break
 
-                    detail = _refetch_with_selenium(driver, row_info["url"], source_name)
+                    try:
+                        detail = _refetch_with_selenium(driver, row_info["url"], source_name)
+                    finally:
+                        if cvl_per_driver:
+                            try:
+                                driver.quit()
+                            except Exception:
+                                pass
+                            driver = None
+
                     desc = detail.get("description", "")
                     if desc:
                         passes, reason = check_description_filter(desc)
@@ -261,10 +283,11 @@ def _run_refetch(filepath: str):
                         print(f"[Refetch]   -> {row_info['title'][:50]}: no description found")
                     _time.sleep(0.5)
             finally:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+                if driver is not None:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
 
         # LinkedIn: uses subprocess Chrome
         linkedin_rows = by_source.get("LinkedIn", [])
@@ -367,7 +390,7 @@ def _run_recover_excluded(filepath: str):
     for row_num in range(2, ws_ex.max_row + 1):
         title = str(ws_ex.cell(row=row_num, column=title_col).value or "").strip() if title_col else ""
         url   = str(ws_ex.cell(row=row_num, column=url_col).value or "").strip() if url_col else ""
-        if not title and url.startswith("http"):
+        if (not title or title.lower() == "(unknown)") and url.startswith("http"):
             candidates.append({
                 "url":      url,
                 "source":   str(ws_ex.cell(row=row_num, column=src_col).value or "").strip() if src_col else "",
@@ -426,9 +449,14 @@ def _run_recover_excluded(filepath: str):
                     print("[Recover] Browser lost — stopping.")
                     break
 
-            driver.get(c["url"])
-            _time.sleep(2)
-            detail = _extract_detail_from_tab(driver)
+            try:
+                driver.get(c["url"])
+                _time.sleep(2)
+                detail = _extract_detail_from_tab(driver)
+            except WebDriverException as e:
+                print(f"[Recover] [{i}/{len(linkedin_rows)}] tab crashed ({e.msg[:60]}), skipping")
+                _random_delay(1, 3)
+                continue
 
             title = detail.get("title", "").strip()
             if not title:
