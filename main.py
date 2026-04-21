@@ -519,9 +519,9 @@ def main():
     parser.add_argument("--with-summaries", action="store_true")
     parser.add_argument("--output", default=config.OUTPUT_FILE)
     parser.add_argument("--rescore", action="store_true",
-                        help="Re-score all jobs in the spreadsheet without scraping (updates S1 + S2).")
+                        help="Re-score all jobs in the spreadsheet without scraping (updates S1 + S2 + EDGE).")
     parser.add_argument("--rescore-s2", action="store_true",
-                        help="Re-score only S2 (CV-fit) for all jobs without scraping. Faster than --rescore.")
+                        help="Re-score only S2 + EDGE for all jobs without scraping. Faster than --rescore.")
     parser.add_argument("--refetch", action="store_true",
                         help="Re-fetch missing descriptions/scores for existing listings.")
     parser.add_argument("--recolor", action="store_true",
@@ -537,7 +537,7 @@ def main():
     # Rescore mode: just score and exit
     if args.rescore:
         print(f"{'='*60}")
-        print(f"UK PM Job Scraper -- Rescore mode (S1 + S2)")
+        print(f"UK PM Job Scraper -- Rescore mode (S1 + S2 + EDGE)")
         print(f"{'='*60}\n")
         rescore_file(args.output)
         return
@@ -545,7 +545,7 @@ def main():
     # Rescore S2 only (CV-fit): faster, skips S1
     if getattr(args, "rescore_s2", False):
         print(f"{'='*60}")
-        print(f"UK PM Job Scraper -- Rescore S2 mode (CV-fit only)")
+        print(f"UK PM Job Scraper -- Rescore S2 + EDGE mode")
         print(f"{'='*60}\n")
         rescore_s2_file(args.output)
         return

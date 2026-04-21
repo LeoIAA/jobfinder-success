@@ -425,12 +425,15 @@ def rescore_s2_file(filepath: str = None):
             continue
         ws = wb[sheet_name]
         cmap = _col_map(_read_headers(ws))
-        if "S2" not in cmap:
-            print(f"[Rescore S2] No 'S2' column in '{sheet_name}', skipping")
+        if "S2" not in cmap and "EDGE" not in cmap:
+            print(f"[Rescore S2] No 'S2' or 'EDGE' column in '{sheet_name}', skipping")
             continue
-        n = _rescore_sheet(ws, cmap, score_s1=False, score_s2=True)
+        has_s2 = "S2" in cmap
+        has_edge = "EDGE" in cmap
+        n = _rescore_sheet(ws, cmap, score_s1=False, score_s2=has_s2, score_edge=has_edge)
         total += n
-        print(f"[Rescore S2] Re-scored {n} jobs in '{sheet_name}'")
+        extras = " + EDGE" if has_edge else ""
+        print(f"[Rescore S2] Re-scored {n} jobs (S2{extras}) in '{sheet_name}'")
 
     wb.save(filepath)
     print(f"[Rescore S2] Done. {total} jobs re-scored in {filepath}")
